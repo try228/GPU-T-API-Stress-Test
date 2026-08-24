@@ -3,7 +3,9 @@ using GpuT.Agent.Core;
 using GpuT.Agent.Native.OpenGL;
 using GpuT.Agent.Native.OpenCL;
 using GpuT.Agent.Native.Vulkan;
-using GpuT.Agent.Native.CUDA; // <-- Добавлен неймспейс CUDA
+using GpuT.Agent.Native.CUDA;
+using GpuT.Agent.Native.ROCm;
+using GpuT.Agent.Native.OneAPI;
 using GpuT.Agent.Runtimes;
 using Silk.NET.Windowing.Glfw;
 using Silk.NET.Input.Glfw;
@@ -14,16 +16,23 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        // 1. Если запущен воркер вычислений ROCm — крутим 100% стресс до сигнала
+        if (args.Length > 0 && args[0] == "--rocm-worker")
+        {
+            using var cts = new CancellationTokenSource();
+            Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
+            RocmStressBenchmark.RunWorkerProcess(cts.Token);
+            return 0;
+        }
+
         GlfwWindowing.RegisterPlatform();
         GlfwInput.RegisterPlatform();
 
         string? backendEnv = Environment.GetEnvironmentVariable("API_backend")?.ToLowerInvariant().Trim();
         var backend = BackendRouter.ParseBackend(backendEnv);
 
-        // Инъекция флагов окружения Mesa (Zink, Rusticl)
         BackendRouter.ApplyEnvironmentOverrides(backend);
 
-        // Self-Exec для Zink до инициализации libGL
         if (backend is TargetBackend.Zink or TargetBackend.ZinkEs)
         {
             string? currentOverride = Environment.GetEnvironmentVariable("MESA_LOADER_DRIVER_OVERRIDE");
@@ -73,15 +82,21 @@ public static class Program
                 OpenGlStressBenchmark.Run(lifecycle.Token, duration, isGles: true, isZink: backend == TargetBackend.ZinkEs);
                 break;
 
-            // Compute: OpenCL & Rusticl
             case TargetBackend.Cl:
             case TargetBackend.MesaCl:
                 OpenClStressBenchmark.Run(lifecycle.Token, duration, isRusticl: backend == TargetBackend.MesaCl);
                 break;
 
-            // Compute: NVIDIA CUDA (Native или через ZLUDA на AMD)
             case TargetBackend.Cuda:
                 CudaStressBenchmark.Run(lifecycle.Token, duration);
+                break;
+
+            case TargetBackend.Rocm:
+                RocmStressBenchmark.Run(lifecycle.Token, duration);
+                break;
+
+            case TargetBackend.Oapi:
+                OneApiStressBenchmark.Run(lifecycle.Token, duration);
                 break;
 
             case TargetBackend.Dxvk:
@@ -95,11 +110,6 @@ public static class Program
                     string dummyPayload = Path.Combine(AppContext.BaseDirectory, "d3d_stress.exe");
                     WindowsPayloadRunner.Launch(selected, dummyPayload, lifecycle.Token);
                 }
-                break;
-
-            case TargetBackend.Rocm:
-            case TargetBackend.Oapi:
-                Console.WriteLine($"[ComputeEngine] Backend {backend} selected.");
                 break;
         }
 

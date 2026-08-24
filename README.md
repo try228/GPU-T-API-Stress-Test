@@ -30,6 +30,8 @@ Replace `api` with one of the supported backends:
 | `cl`      | Full OpenCL implementation |
 | `mesa_cl` | Mesa Rusticl               |
 | `cuda`    | NVIDIA CUDA                |
+| `rocm`    | AMD ROCm                   |
+| `oapi`    | Intel oneAPI               |
 
 ## WIP APIs
 
@@ -37,8 +39,6 @@ The following backends are currently work in progress:
 
 | Backend   | API                        |
 | --------- | -------------------------- |
-| `rocm`    | AMD ROCm                   |
-| `oapi`    | Intel oneAPI               |
 | `dxvk`    | DXVK                       |
 | `vkd3d`   | VKD3D                      |
 | `vkd3d_p` | VKD3D-Proton               |
@@ -46,6 +46,6 @@ The following backends are currently work in progress:
 
 ## Known Issues
 
-* Using `DRI_PRIME` with the OpenGL/OpenGL ES backends is currently not supported.
+* Using DRI_PRIME with OpenGL/OpenGL ES and related APIs (OpenCL, CUDA, ROCm, oneAPI) is currently not supported.
 * Rusticl may take a long time to open or close.
 

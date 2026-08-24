@@ -20,17 +20,17 @@ public static class BackendRouter
             "gl" => TargetBackend.Gl,
             "gles" => TargetBackend.Gles,
             "cl" => TargetBackend.Cl,
-            "mesa_cl" => TargetBackend.MesaCl,
-            "rocm" => TargetBackend.Rocm,
-            "oapi" => TargetBackend.Oapi,
+            "mesa_cl" or "rusticl" => TargetBackend.MesaCl,
+            "rocm" or "hip" => TargetBackend.Rocm,
+            "oapi" or "oneapi" or "level0" => TargetBackend.Oapi,
             "cuda" => TargetBackend.Cuda,
             "dxvk" => TargetBackend.Dxvk,
             "vkd3d" => TargetBackend.Vkd3d,
-            "vkd3d_p" => TargetBackend.Vkd3dP,
-            "wd3d" => TargetBackend.Wd3d,
+            "vkd3d_p" or "vkd3d-proton" => TargetBackend.Vkd3dP,
+            "wd3d" or "wined3d" => TargetBackend.Wd3d,
             "zink" => TargetBackend.Zink,
             "zink_es" => TargetBackend.ZinkEs,
-            _ => TargetBackend.Vk // Fallback по умолчанию
+            _ => TargetBackend.Vk
         };
     }
 
@@ -49,12 +49,18 @@ public static class BackendRouter
                 Environment.SetEnvironmentVariable("RUSTICL_ENABLE", "all");
                 Console.WriteLine("[EnvManager] Injected Rusticl Flag: RUSTICL_ENABLE=all");
                 break;
+
+            // ФИКС 100% IDLE ROCM: Отключаем поллинг очередей, включаем аппаратные прерывания
+case TargetBackend.Rocm:
+                Environment.SetEnvironmentVariable("GPU_MAX_HW_QUEUES", "1");
+                Environment.SetEnvironmentVariable("HSA_ENABLE_INTERRUPT", "1");
+                Console.WriteLine("[EnvManager] Injected ROCm Flags: GPU_MAX_HW_QUEUES=1, HSA_ENABLE_INTERRUPT=1");
+                break;
         }
     }
 
     public static RuntimeEnvironment? ResolveRuntime(TargetBackend backend, List<RuntimeEnvironment> available)
     {
-        // Фильтрация согласно правилам совместимости
         List<RuntimeEnvironment> filtered = backend switch
         {
             TargetBackend.Vkd3d => available.Where(r => r.Type == RuntimeType.Wine).ToList(),
@@ -71,14 +77,12 @@ public static class BackendRouter
             return null;
         }
 
-        // Если ровно одна среда — выбираем автоматически
         if (filtered.Count == 1)
         {
             Console.WriteLine($"[AutoSelector] Selected only available runtime: {filtered[0].Name}");
             return filtered[0];
         }
 
-        // Интерактивное меню выбора сред
         Console.WriteLine("\n==================================================");
         Console.WriteLine($" Multiple compatible runtimes found for backend [{backend}]:");
         for (int i = 0; i < filtered.Count; i++)
