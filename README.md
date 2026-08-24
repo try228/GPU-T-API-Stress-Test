@@ -46,4 +46,6 @@ The following backends are currently work in progress:
 
 ## Known Issues
 
-Using `DRI_PRIME` with the OpenGL/OpenGL ES backends is currently not supported.
+* Using `DRI_PRIME` with the OpenGL/OpenGL ES backends is currently not supported.
+* Rusticl may take a long time to open or close.
+
