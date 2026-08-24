@@ -17,7 +17,7 @@ public sealed unsafe class OpenClStressBenchmark
     private const int WinWidth = PixelUiEngine.BaseWidth;   // 900
     private const int WinHeight = PixelUiEngine.BaseHeight; // 550
     private const nuint GlobalThreads = 1048576; // 1 048 576 float4 потоков (~4.2M float значений)
-    private const nuint LocalThreads = 256;      // Оптимальный размер воркгруппы для RDNA3/NVIDIA/Intel
+    private const nuint LocalThreads = 256;      // Оптимальный размер воркгруппы для NVIDIA (8 варпов) / AMD / Intel
     private const nuint BufferSize = GlobalThreads * 16; // 16 MB VRAM
 
     private static volatile bool s_isBenchmarking = false;
@@ -51,17 +51,17 @@ public sealed unsafe class OpenClStressBenchmark
         string apiTitle = isRusticl ? "Rusticl (Mesa Rust OpenCL)" : "OpenCL 1.2+ Compute";
         var theme = isRusticl ? ThemePalette.Rusticl : ThemePalette.OpenCL;
 
-        // 1. Поиск дискретной видеокарты
+        // 1. Поиск лучшей видеокарты (NVIDIA / AMD / Intel dGPU)
         (nint platform, nint device, string devName, string platformName) = SelectBestOpenClDevice(isRusticl);
         
         if (platform == nint.Zero || device == nint.Zero)
-            throw new InvalidOperationException("No suitable OpenCL platform/device found.");
+            throw new InvalidOperationException($"No suitable OpenCL platform/device found for target: {apiTitle}");
 
         string devVendor = GetClDeviceInfo(device, OpenClNative.CL_DEVICE_VENDOR);
         string drvVersion = GetClDeviceInfo(device, OpenClNative.CL_DRIVER_VERSION);
 
         Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"[OpenCLEngine] API Target: {apiTitle}");
+        Console.WriteLine($"[OpenCLEngine] API Target:        {apiTitle}");
         Console.WriteLine($"[OpenCLEngine] Selected Platform: {platformName}");
         Console.WriteLine($"[OpenCLEngine] Selected Device:   {devName} ({devVendor})");
         Console.WriteLine($"[OpenCLEngine] Driver Version:    {drvVersion}");
@@ -359,16 +359,17 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine($"[OpenCL Discovery] Found {numPlatforms} platform(s):");
 
-        nint selectedPlatform = nint.Zero;
-        nint selectedDevice = nint.Zero;
-        string selectedDevName = "";
-        string selectedPlatformName = "";
+        nint bestPlatform = nint.Zero;
+        nint bestDevice = nint.Zero;
+        string bestDevName = "";
+        string bestPlatformName = "";
+        int highestScore = -1;
 
         for (uint i = 0; i < numPlatforms; i++)
         {
             string pName = GetClPlatformInfo(platforms[i], OpenClNative.CL_PLATFORM_NAME);
             string pVendor = GetClPlatformInfo(platforms[i], OpenClNative.CL_PLATFORM_VENDOR);
-            Console.WriteLine($"  [{i}] Platform: {pName} ({pVendor})");
+            Console.WriteLine($"  [{i}] Platform: \"{pName}\" (Vendor: \"{pVendor}\")");
 
             uint devCount = 0;
             OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, 0, null, &devCount);
@@ -380,40 +381,75 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
             for (uint d = 0; d < devCount; d++)
             {
                 string dName = GetClDeviceInfo(devices[d], OpenClNative.CL_DEVICE_NAME);
-                Console.WriteLine($"       -> Device #{d}: {dName}");
+                string dVendor = GetClDeviceInfo(devices[d], OpenClNative.CL_DEVICE_VENDOR);
+                Console.WriteLine($"       -> Device #{d}: \"{dName}\" (Vendor: \"{dVendor}\")");
 
-                if (isRusticl && pName.Contains("rusticl", StringComparison.OrdinalIgnoreCase))
+                int score = CalculateDeviceScore(pName, pVendor, dName, dVendor, isRusticl);
+
+                if (score > highestScore)
                 {
-                    if (selectedDevice == nint.Zero || dName.Contains("Radeon", StringComparison.OrdinalIgnoreCase))
-                    {
-                        selectedPlatform = platforms[i];
-                        selectedDevice = devices[d];
-                        selectedDevName = dName;
-                        selectedPlatformName = pName;
-                    }
-                }
-                else if (!isRusticl)
-                {
-                    if (pName.Contains("AMD", StringComparison.OrdinalIgnoreCase) || pVendor.Contains("Advanced Micro Devices", StringComparison.OrdinalIgnoreCase))
-                    {
-                        selectedPlatform = platforms[i];
-                        selectedDevice = devices[d];
-                        selectedDevName = dName;
-                        selectedPlatformName = pName;
-                    }
-                    else if (selectedDevice == nint.Zero)
-                    {
-                        selectedPlatform = platforms[i];
-                        selectedDevice = devices[d];
-                        selectedDevName = dName;
-                        selectedPlatformName = pName;
-                    }
+                    highestScore = score;
+                    bestPlatform = platforms[i];
+                    bestDevice = devices[d];
+                    bestDevName = dName;
+                    bestPlatformName = pName;
                 }
             }
         }
         Console.ResetColor();
 
-        return (selectedPlatform, selectedDevice, selectedDevName, selectedPlatformName);
+        return (bestPlatform, bestDevice, bestDevName, bestPlatformName);
+    }
+
+    private static int CalculateDeviceScore(string pName, string pVendor, string dName, string dVendor, bool isRusticl)
+    {
+        string fullInfo = $"{pName} {pVendor} {dName} {dVendor}".ToLowerInvariant();
+
+        if (isRusticl)
+        {
+            // Если запрошен режим Rusticl, платформы Mesa Rusticl получают максимальный приоритет
+            if (pName.Contains("rusticl", StringComparison.OrdinalIgnoreCase))
+            {
+                int score = 2000;
+                if (fullInfo.Contains("radeon") || fullInfo.Contains("amd")) score += 300;
+                if (fullInfo.Contains("nvidia") || fullInfo.Contains("geforce") || fullInfo.Contains("rtx")) score += 300;
+                if (fullInfo.Contains("intel") || fullInfo.Contains("arc")) score += 100;
+                return score;
+            }
+            return 10; // Не Rusticl платформы получают минимальный вес
+        }
+
+        // Обычный режим (приоритет официальным дискретным GPU NVIDIA / AMD / Intel)
+        int baseScore = 0;
+
+        // 1. NVIDIA (CUDA платформы и GPU)
+        if (fullInfo.Contains("nvidia") || fullInfo.Contains("cuda") || fullInfo.Contains("geforce") || fullInfo.Contains("rtx") || fullInfo.Contains("quadro") || fullInfo.Contains("tesla"))
+        {
+            baseScore += 1000;
+        }
+        // 2. AMD (ROCm / PAL / Radeon)
+        else if (fullInfo.Contains("amd") || fullInfo.Contains("advanced micro devices") || fullInfo.Contains("radeon"))
+        {
+            baseScore += 950;
+        }
+        // 3. Intel Arc / Дискретная графика
+        else if (fullInfo.Contains("arc") || fullInfo.Contains("iris") || fullInfo.Contains("intel"))
+        {
+            baseScore += 700;
+        }
+        // 4. Fallback для других GPU
+        else
+        {
+            baseScore += 300;
+        }
+
+        // Штраф для чисто процессорных / софтверных эмуляций
+        if (fullInfo.Contains("cpu") || fullInfo.Contains("pocl") || fullInfo.Contains("llvmpipe") || fullInfo.Contains("portable computing language"))
+        {
+            baseScore -= 600;
+        }
+
+        return Math.Max(1, baseScore);
     }
 
     private static string GetClPlatformInfo(nint platform, uint param)
@@ -423,7 +459,7 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         if (size == 0) return "";
         byte* buffer = stackalloc byte[(int)size];
         OpenClNative.clGetPlatformInfo(platform, param, size, buffer, null);
-        return Marshal.PtrToStringAnsi((nint)buffer) ?? "";
+        return Marshal.PtrToStringUTF8((nint)buffer) ?? Marshal.PtrToStringAnsi((nint)buffer) ?? "";
     }
 
     private static string GetClDeviceInfo(nint device, uint param)
@@ -433,10 +469,10 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         if (size == 0) return "";
         byte* buffer = stackalloc byte[(int)size];
         OpenClNative.clGetDeviceInfo(device, param, size, buffer, null);
-        return Marshal.PtrToStringAnsi((nint)buffer) ?? "";
+        return Marshal.PtrToStringUTF8((nint)buffer) ?? Marshal.PtrToStringAnsi((nint)buffer) ?? "";
     }
 
-private static nint BuildClProgram(nint context, nint device, string source)
+    private static nint BuildClProgram(nint context, nint device, string source)
     {
         int err = 0;
         byte* pSrc = (byte*)Marshal.StringToHGlobalAnsi(source);
@@ -446,7 +482,7 @@ private static nint BuildClProgram(nint context, nint device, string source)
         Marshal.FreeHGlobal((nint)pSrc);
         if (err != 0) throw new InvalidOperationException($"clCreateProgramWithSource failed: {err}");
 
-        // Оптимизирующие флаги для мгновенной сборки Clang/LLVM в Rusticl и ROCm
+        // Оптимизирующие флаги для мгновенной сборки Clang/LLVM в Rusticl, NVIDIA CUDA и AMD ROCm
         fixed (byte* pOpts = "-cl-fast-relaxed-math -cl-mad-enable"u8)
         {
             int buildRes = OpenClNative.clBuildProgram(program, 1, &device, pOpts, null, null);
@@ -456,7 +492,7 @@ private static nint BuildClProgram(nint context, nint device, string source)
                 OpenClNative.clGetProgramBuildInfo(program, device, OpenClNative.CL_PROGRAM_BUILD_LOG, 0, null, &logSize);
                 byte* pLog = stackalloc byte[(int)logSize];
                 OpenClNative.clGetProgramBuildInfo(program, device, OpenClNative.CL_PROGRAM_BUILD_LOG, logSize, pLog, null);
-                string log = Marshal.PtrToStringAnsi((nint)pLog) ?? "";
+                string log = Marshal.PtrToStringUTF8((nint)pLog) ?? Marshal.PtrToStringAnsi((nint)pLog) ?? "";
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"[OpenCLEngine] OpenCL C Build Log:\n{log}");
                 Console.ResetColor();
