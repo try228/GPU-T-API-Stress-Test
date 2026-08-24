@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using GpuT.Agent.Core;
 using GpuT.Agent.Native.OpenGL;
+using GpuT.Agent.Native.OpenCL;
 using GpuT.Agent.Native.Vulkan;
 using GpuT.Agent.Runtimes;
 using Silk.NET.Windowing.Glfw;
@@ -12,22 +13,21 @@ public static class Program
 {
     public static int Main(string[] args)
     {
-        // 1. ГЛОБАЛЬНАЯ РЕГИСТРАЦИЯ GLFW ДЛЯ NATIVE AOT (ДЛЯ ВСЕХ БЭКЕНДОВ)
         GlfwWindowing.RegisterPlatform();
         GlfwInput.RegisterPlatform();
 
         string? backendEnv = Environment.GetEnvironmentVariable("API_backend")?.ToLowerInvariant().Trim();
         var backend = BackendRouter.ParseBackend(backendEnv);
 
-        // Перезапуск процесса для Zink до загрузки libGL
+        // Инъекция флагов окружения Mesa (Zink, Rusticl)
+        BackendRouter.ApplyEnvironmentOverrides(backend);
+
+        // Self-Exec для Zink до инициализации libGL
         if (backend is TargetBackend.Zink or TargetBackend.ZinkEs)
         {
             string? currentOverride = Environment.GetEnvironmentVariable("MESA_LOADER_DRIVER_OVERRIDE");
             if (currentOverride != "zink")
             {
-                Environment.SetEnvironmentVariable("MESA_LOADER_DRIVER_OVERRIDE", "zink");
-                Environment.SetEnvironmentVariable("GALLIUM_DRIVER", "zink");
-
                 string exePath = Environment.ProcessPath ?? "/proc/self/exe";
                 ProcessStartInfo psi = new(exePath, string.Join(' ', args))
                 {
@@ -72,6 +72,12 @@ public static class Program
                 OpenGlStressBenchmark.Run(lifecycle.Token, duration, isGles: true, isZink: backend == TargetBackend.ZinkEs);
                 break;
 
+            // Compute: OpenCL & Rusticl
+            case TargetBackend.Cl:
+            case TargetBackend.MesaCl:
+                OpenClStressBenchmark.Run(lifecycle.Token, duration, isRusticl: backend == TargetBackend.MesaCl);
+                break;
+
             case TargetBackend.Dxvk:
             case TargetBackend.Vkd3d:
             case TargetBackend.Vkd3dP:
@@ -85,16 +91,10 @@ public static class Program
                 }
                 break;
 
-            case TargetBackend.Cl:
-            case TargetBackend.MesaCl:
             case TargetBackend.Rocm:
             case TargetBackend.Oapi:
             case TargetBackend.Cuda:
-                Console.WriteLine($"[ComputeEngine] Launching Compute stress engine on backend {backend}...");
-                while (!lifecycle.Token.IsCancellationRequested)
-                {
-                    Thread.SpinWait(100_000);
-                }
+                Console.WriteLine($"[ComputeEngine] Backend {backend} selected.");
                 break;
         }
 

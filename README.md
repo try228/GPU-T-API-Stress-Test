@@ -20,13 +20,15 @@ API_backend=api ./bin/Release/net10.0/linux-x64/publish/GpuT.Agent
 
 Replace `api` with one of the supported backends:
 
-| Backend   | API                 |
-| --------- | ------------------- |
-| `vk`      | Vulkan              |
-| `gl`      | OpenGL              |
-| `gles`    | OpenGL ES           |
-| `zink`    | Zink over OpenGL    |
-| `zink_es` | Zink over OpenGL ES |
+| Backend   | API                        |
+| --------- | -------------------------- |
+| `vk`      | Vulkan                     |
+| `gl`      | OpenGL                     |
+| `gles`    | OpenGL ES                  |
+| `zink`    | Zink over OpenGL           |
+| `zink_es` | Zink over OpenGL ES        |
+| `cl`      | Full OpenCL implementation |
+| `mesa_cl` | Mesa Rusticl               |
 
 ## WIP APIs
 
@@ -34,8 +36,6 @@ The following backends are currently work in progress:
 
 | Backend   | API                        |
 | --------- | -------------------------- |
-| `cl`      | Full OpenCL implementation |
-| `mesa_cl` | Mesa Rusticl               |
 | `rocm`    | AMD ROCm                   |
 | `cuda`    | NVIDIA CUDA                |
 | `oapi`    | Intel oneAPI               |

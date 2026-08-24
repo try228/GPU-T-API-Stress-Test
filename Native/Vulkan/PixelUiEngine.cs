@@ -82,7 +82,7 @@ public static class PixelUiEngine
         ThemePalette theme,
         int mouseX, int mouseY, float animTime)
     {
-        // 1. Процедурный фон
+        // 1. Процедурный фон с точной палитрой темы
         RenderGpuZBackground(buffer, width, height, isBenchmarking ? animTime : 0.0f, isBenchmarking, theme);
 
         uint accentColor = GetThemeAccent(theme);
@@ -140,7 +140,7 @@ public static class PixelUiEngine
 
         string durStr = durationSec == 0 ? $"{elapsedSec:F1}s / Unlimited" : $"{elapsedSec:F1}s / {durationSec}s";
         DrawString(buffer, width, 55, hudY + 15, $"TARGET DURATION: {durStr}", 0xFFF0F6FC, 1);
-        DrawString(buffer, width, 55, hudY + 35, $"COMPUTE LOAD: ~{tflops:F2} TFLOPS  |  RATE: {dps:F0} FPS / Dps", isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+        DrawString(buffer, width, 55, hudY + 35, $"COMPUTE LOAD: ~{tflops:F2} TFLOPS  |  RATE: {dps:F0} Dispatches/s", isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
         
         if (hasHwSensor)
         {
@@ -148,7 +148,7 @@ public static class PixelUiEngine
         }
         else
         {
-            DrawString(buffer, width, 55, hudY + 55, "PIPELINE: VSync OFF (Direct Hardware Render)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
+            DrawString(buffer, width, 55, hudY + 55, "COMPUTE PIPELINE: 100% Saturation (VSync OFF)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
         }
 
         if (durationSec > 0 && isBenchmarking)
@@ -188,14 +188,14 @@ public static class PixelUiEngine
                 {
                     switch (theme)
                     {
-                        // 1. VULKAN: Чистый огненно-красный, пылающий оранжевый и янтарь
+                        // 1. VULKAN: Огненно-красный, пылающий оранжевый
                         case ThemePalette.Vulkan:
                             r = (byte)Math.Clamp((int)(200 + 55 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(40 + 110 * (MathF.Sin(time * 1.5f + nx * 2.0f) * 0.5f + 0.5f) * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(10 + 30 * (1.0f - norm)), 0, 255);
                             break;
 
-                        // 2. OPENGL & ZINK: Королевский синий, глубокий кобальт и неоновый циан
+                        // 2. OPENGL & ZINK: Синий кобальт, неоновый циан
                         case ThemePalette.OpenGL:
                         case ThemePalette.Dxvk:
                             r = (byte)Math.Clamp((int)(15 + 45 * (1.0f - norm)), 0, 255);
@@ -203,50 +203,56 @@ public static class PixelUiEngine
                             b = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
                             break;
 
-                        // 3. OPENGL ES & ZINK ES: Неоновый фиолетовый, пурпурный, яркая маджента/розовый
+                        // 3. OPENGL ES & ZINK ES: Неоновая маджента, пурпурный, розовый
                         case ThemePalette.OpenGLES:
                             r = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(20 + 55 * (MathF.Sin(time * 2.0f + ny) * 0.5f + 0.5f)), 0, 255);
                             b = (byte)Math.Clamp((int)(160 + 95 * (MathF.Cos(time * 1.5f - nx) * 0.5f + 0.5f)), 0, 255);
                             break;
 
-                        // 4. CUDA: Изумрудный, неоновый лаймово-зеленый (NVIDIA)
+                        // 4. RUSTICL (Mesa Rust): Фирменный ржаво-медный, бронзовый и янтарь (Rust Orange)
+                        case ThemePalette.Rusticl:
+                            r = (byte)Math.Clamp((int)(190 + 65 * norm), 0, 255);
+                            g = (byte)Math.Clamp((int)(65 + 85 * (MathF.Sin(time * 1.6f + nx * 2.2f) * 0.5f + 0.5f)), 0, 255);
+                            b = (byte)Math.Clamp((int)(15 + 35 * (1.0f - norm)), 0, 255);
+                            break;
+
+                        // 5. OPENCL: Чистая морская волна (Teal), аквамарин и холодный изумруд
+                        case ThemePalette.OpenCL:
+                            r = (byte)Math.Clamp((int)(15 + 50 * (1.0f - norm)), 0, 255);
+                            g = (byte)Math.Clamp((int)(150 + 105 * norm), 0, 255);
+                            b = (byte)Math.Clamp((int)(140 + 115 * (MathF.Sin(time * 1.4f + ny * 1.8f) * 0.5f + 0.5f)), 0, 255);
+                            break;
+
+                        // 6. CUDA: Лаймово-зеленый NVIDIA
                         case ThemePalette.Cuda:
                             r = (byte)Math.Clamp((int)(10 + 40 * (1.0f - norm)), 0, 255);
                             g = (byte)Math.Clamp((int)(160 + 95 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(20 + 50 * norm), 0, 255);
                             break;
 
-                        // 5. ROCm: Рубиновый, карминно-красный (AMD)
+                        // 7. ROCm: Рубиновый красный AMD
                         case ThemePalette.Rocm:
                             r = (byte)Math.Clamp((int)(210 + 45 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(15 + 35 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(25 + 45 * norm), 0, 255);
                             break;
 
-                        // 6. OneAPI: Электрический голубой, ультрамарин (Intel)
+                        // 8. OneAPI: Электрический голубой Intel
                         case ThemePalette.OneApi:
                             r = (byte)Math.Clamp((int)(10 + 40 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(120 + 115 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(210 + 45 * norm), 0, 255);
                             break;
 
-                        // 7. OpenCL / Rusticl: Морская волна (Teal) и медный акцент
-                        case ThemePalette.OpenCL:
-                        case ThemePalette.Rusticl:
-                            r = (byte)Math.Clamp((int)(20 + 70 * (1.0f - norm)), 0, 255);
-                            g = (byte)Math.Clamp((int)(140 + 110 * norm), 0, 255);
-                            b = (byte)Math.Clamp((int)(140 + 110 * norm), 0, 255);
-                            break;
-
-                        // 8. VKD3D: Стальной серебристый и сиреневый (Valve)
+                        // 9. VKD3D: Сиреневый и стальной Valve
                         case ThemePalette.Vkd3d:
                             r = (byte)Math.Clamp((int)(140 + 80 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(80 + 70 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(150 + 90 * norm), 0, 255);
                             break;
 
-                        // 9. WineD3D: Благородный винный каберне
+                        // 10. WineD3D: Винный каберне
                         case ThemePalette.WineD3d:
                             r = (byte)Math.Clamp((int)(170 + 75 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(15 + 30 * (1.0f - norm)), 0, 255);
@@ -256,7 +262,7 @@ public static class PixelUiEngine
                 }
                 else
                 {
-                    // Спокойный фон в покое (Idle)
+                    // Фоновый градиент в режиме ожидания (Idle)
                     float baseGrad = (ny * 0.5f + 0.5f);
                     switch (theme)
                     {
@@ -265,6 +271,12 @@ public static class PixelUiEngine
                             break;
                         case ThemePalette.OpenGLES:
                             r = (byte)(24 + 20 * baseGrad); g = (byte)(12 + 10 * baseGrad); b = (byte)(28 + 25 * baseGrad);
+                            break;
+                        case ThemePalette.Rusticl:
+                            r = (byte)(30 + 24 * baseGrad); g = (byte)(16 + 12 * baseGrad); b = (byte)(12 + 8 * baseGrad);
+                            break;
+                        case ThemePalette.OpenCL:
+                            r = (byte)(10 + 8 * baseGrad); g = (byte)(24 + 20 * baseGrad); b = (byte)(26 + 22 * baseGrad);
                             break;
                         case ThemePalette.Cuda:
                             r = (byte)(12 + 10 * baseGrad); g = (byte)(26 + 24 * baseGrad); b = (byte)(14 + 10 * baseGrad);
@@ -279,7 +291,6 @@ public static class PixelUiEngine
                     }
                 }
 
-                // ЕДИНЫЙ B8G8R8A8 ФОРМАТ ПАМЯТИ: 0xFF(Alpha) | (R << 16) | (G << 8) | B
                 buffer[rowOffset + x] = 0xFF000000 | ((uint)r << 16) | ((uint)g << 8) | b;
             }
         }
@@ -289,12 +300,13 @@ public static class PixelUiEngine
     {
         ThemePalette.Vulkan   => 0xFFFF5722, // Огненно-оранжевый (Vulkan)
         ThemePalette.OpenGLES => 0xFFFF4081, // Неоново-розовый (OpenGL ES)
+        ThemePalette.Rusticl  => 0xFFFF7043, // Медно-ржавый оранжевый (Rusticl)
+        ThemePalette.OpenCL   => 0xFF2DD4BF, // Аквамарин / Teal (OpenCL)
         ThemePalette.Cuda     => 0xFF00E676, // Лаймово-зеленый (NVIDIA)
         ThemePalette.Rocm     => 0xFFFF1744, // Красный (AMD)
         ThemePalette.OneApi   => 0xFF00B0FF, // Голубой (Intel)
-        ThemePalette.OpenCL or ThemePalette.Rusticl => 0xFF1DE9B6, // Teal
-        ThemePalette.Vkd3d    => 0xFFE040FB, // Сиреневый
-        ThemePalette.WineD3d  => 0xFFFF5252, // Винный
+        ThemePalette.Vkd3d    => 0xFFE040FB, // Сиреневый (Valve)
+        ThemePalette.WineD3d  => 0xFFFF5252, // Винный (Wine)
         _                     => 0xFF2979FF  // Кобальтово-синий (OpenGL)
     };
 
@@ -302,10 +314,11 @@ public static class PixelUiEngine
     {
         ThemePalette.Vulkan   => 0xEEB7300D,
         ThemePalette.OpenGLES => 0xEEA0144F,
+        ThemePalette.Rusticl  => 0xEEBF360C,
+        ThemePalette.OpenCL   => 0xEE00695C,
         ThemePalette.Cuda     => 0xEE007E33,
         ThemePalette.Rocm     => 0xEEB71C1C,
         ThemePalette.OneApi   => 0xEE01579B,
-        ThemePalette.OpenCL or ThemePalette.Rusticl => 0xEE004D40,
         ThemePalette.WineD3d  => 0xEE880E4F,
         _                     => 0xEE0D47A1
     };
