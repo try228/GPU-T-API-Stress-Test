@@ -3,6 +3,7 @@ using GpuT.Agent.Core;
 using GpuT.Agent.Native.OpenGL;
 using GpuT.Agent.Native.OpenCL;
 using GpuT.Agent.Native.Vulkan;
+using GpuT.Agent.Native.CUDA; // <-- Добавлен неймспейс CUDA
 using GpuT.Agent.Runtimes;
 using Silk.NET.Windowing.Glfw;
 using Silk.NET.Input.Glfw;
@@ -78,6 +79,11 @@ public static class Program
                 OpenClStressBenchmark.Run(lifecycle.Token, duration, isRusticl: backend == TargetBackend.MesaCl);
                 break;
 
+            // Compute: NVIDIA CUDA (Native или через ZLUDA на AMD)
+            case TargetBackend.Cuda:
+                CudaStressBenchmark.Run(lifecycle.Token, duration);
+                break;
+
             case TargetBackend.Dxvk:
             case TargetBackend.Vkd3d:
             case TargetBackend.Vkd3dP:
@@ -93,7 +99,6 @@ public static class Program
 
             case TargetBackend.Rocm:
             case TargetBackend.Oapi:
-            case TargetBackend.Cuda:
                 Console.WriteLine($"[ComputeEngine] Backend {backend} selected.");
                 break;
         }

@@ -29,6 +29,7 @@ Replace `api` with one of the supported backends:
 | `zink_es` | Zink over OpenGL ES        |
 | `cl`      | Full OpenCL implementation |
 | `mesa_cl` | Mesa Rusticl               |
+| `cuda`    | NVIDIA CUDA                |
 
 ## WIP APIs
 
@@ -37,9 +38,12 @@ The following backends are currently work in progress:
 | Backend   | API                        |
 | --------- | -------------------------- |
 | `rocm`    | AMD ROCm                   |
-| `cuda`    | NVIDIA CUDA                |
 | `oapi`    | Intel oneAPI               |
 | `dxvk`    | DXVK                       |
 | `vkd3d`   | VKD3D                      |
 | `vkd3d_p` | VKD3D-Proton               |
 | `wd3d`    | WineD3D                    |
+
+## Known Issues
+
+Using `DRI_PRIME` with the OpenGL/OpenGL ES backends is currently not supported.
