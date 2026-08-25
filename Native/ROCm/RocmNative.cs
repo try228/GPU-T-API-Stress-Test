@@ -1,13 +1,19 @@
 using System.Runtime.InteropServices;
 
-namespace GpuT.Agent.Native.ROCm;
+namespace GPU_T.StressTest.Native.ROCm;
 
+/// <summary>
+/// Direct P/Invoke bindings for AMD ROCm / HIP Runtime (libamdhip64.so, libhiprtc.so).
+/// </summary>
 public static unsafe partial class RocmNative
 {
     private const string HipLib = "libamdhip64.so";
     private const string RtcLib = "libhiprtc.so";
 
+    /// <summary>HIP API success status code.</summary>
     public const int HIP_SUCCESS = 0;
+
+    /// <summary>HIPRTC API success status code.</summary>
     public const int HIPRTC_SUCCESS = 0;
 
     [LibraryImport(HipLib, EntryPoint = "hipInit")]
@@ -26,7 +32,7 @@ public static unsafe partial class RocmNative
     public static partial int hipDeviceGetName(byte* name, int len, int deviceId);
 
     [LibraryImport(HipLib, EntryPoint = "hipDeviceReset")]
-    public static partial int hipDeviceReset(); // Сброс очередей MES в Idle
+    public static partial int hipDeviceReset();
 
     [LibraryImport(HipLib, EntryPoint = "hipMalloc")]
     public static partial int hipMalloc(nint* ptr, nuint size);

@@ -1,11 +1,15 @@
 using System.Runtime.InteropServices;
 
-namespace GpuT.Agent.Native.CUDA;
+namespace GPU_T.StressTest.Native.CUDA;
 
+/// <summary>
+/// Direct P/Invoke bindings for the NVIDIA CUDA Driver API (libcuda.so.1).
+/// </summary>
 public static unsafe partial class CudaNative
 {
     private const string LibName = "libcuda.so.1";
 
+    /// <summary>CUDA Driver API success status code.</summary>
     public const int CUDA_SUCCESS = 0;
 
     [LibraryImport(LibName, EntryPoint = "cuInit")]

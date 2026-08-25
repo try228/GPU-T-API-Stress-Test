@@ -1,18 +1,19 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
-using Silk.NET.Core.Contexts;
 using Silk.NET.Input;
+using Silk.NET.Input.Glfw;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
-using GpuT.Agent.Native.Vulkan;
 using Silk.NET.Windowing.Glfw;
-using Silk.NET.Input.Glfw;
+using GPU_T.StressTest.Native.Vulkan;
 
 using MouseButton = Silk.NET.Input.MouseButton;
 
-namespace GpuT.Agent.Native.OpenGL;
+namespace GPU_T.StressTest.Native.OpenGL;
 
+/// <summary>
+/// Desktop OpenGL 3.3 Core and OpenGL ES 3.0 stress benchmark engine.
+/// </summary>
 public sealed unsafe class OpenGlStressBenchmark
 {
     private const int WinWidth = PixelUiEngine.BaseWidth;   // 900
@@ -26,14 +27,20 @@ public sealed unsafe class OpenGlStressBenchmark
     private static Stopwatch s_benchTimer = new();
     private static ulong s_totalFrames = 0;
     private static double s_currentFps = 0;
-    private static IWindow? s_windowInstance = null;
 
     private static int s_mouseX = 0;
     private static int s_mouseY = 0;
 
-public static void Run(CancellationToken hostCt, int initialDuration = 0, bool isGles = false, bool isZink = false)
+    /// <summary>
+    /// Runs the OpenGL stress benchmark on the requested GPU device.
+    /// </summary>
+    /// <param name="hostCt">Host cancellation token.</param>
+    /// <param name="initialDuration">Initial duration in seconds (0 = unlimited).</param>
+    /// <param name="isGles">True if targeting OpenGL ES 3.0.</param>
+    /// <param name="isZink">True if executing over Mesa Zink Gallium translation.</param>
+    /// <param name="selectedGpuIndex">Target physical GPU index.</param>
+    public static void Run(CancellationToken hostCt, int initialDuration = 0, bool isGles = false, bool isZink = false, int selectedGpuIndex = 0)
     {
-        // Статическая регистрация GLFW для Native AOT
         GlfwWindowing.RegisterPlatform();
         GlfwInput.RegisterPlatform();
 
@@ -46,43 +53,41 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
             ? (isGles ? "Zink (OpenGL ES over Vulkan)" : "Zink (OpenGL over Vulkan)")
             : (isGles ? "OpenGL ES 3.0" : "OpenGL 3.3 Core");
 
-        // 1. Каноничная настройка окна Silk.NET
+        // 1. Window setup
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
         winOptions.Title = $"GPU-T Render Test & {apiTitle} Stress Agent";
         winOptions.VSync = false;
         winOptions.WindowBorder = WindowBorder.Fixed;
-        winOptions.ShouldSwapAutomatically = false; // Мы сами вызываем SwapBuffers
-        winOptions.IsVisible = true; // Гарантированный показ окна
+        winOptions.ShouldSwapAutomatically = false;
+        winOptions.IsVisible = true;
 
-        // Строгое указание API для Silk.NET (он сам подберет EGL/GLX под капотом)
         winOptions.API = isGles
             ? new GraphicsAPI(ContextAPI.OpenGLES, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 0))
             : new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 3));
 
         using var window = Window.Create(winOptions);
-        s_windowInstance = window;
-        window.Initialize(); // Инициализирует окно и контекст
+        window.Initialize();
         
-        // 2. Получение OpenGL API из готового окна
+        // 2. OpenGL API Context
         var gl = GL.GetApi(window);
 
-        string rawRenderer = gl.GetStringS(StringName.Renderer) ?? "Generic GPU";
+        string rawRenderer = gl.GetStringS(StringName.Renderer) ?? $"GPU #{selectedGpuIndex}";
         string version = gl.GetStringS(StringName.Version) ?? "Unknown Version";
         string vendor = gl.GetStringS(StringName.Vendor) ?? "Unknown Vendor";
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"[OpenGLEngine] Context Active: {apiTitle}");
-        Console.WriteLine($"[OpenGLEngine] GL_RENDERER: {rawRenderer} ({vendor})");
-        Console.WriteLine($"[OpenGLEngine] GL_VERSION:  {version}");
+        Console.WriteLine($"[OpenGLEngine] GL_RENDERER:    {rawRenderer} ({vendor})");
+        Console.WriteLine($"[OpenGLEngine] GL_VERSION:     {version}");
         Console.ResetColor();
 
-        // 3. Отключаем лишнее
+        // 3. Configure GL State
         gl.Disable(EnableCap.DepthTest);
         gl.Disable(EnableCap.CullFace);
         gl.ClearColor(0.08f, 0.09f, 0.12f, 1.0f);
 
-        // 4. Компиляция шейдеров
+        // 4. Compile Shaders
         string vsSource = isGles ? GetGlesVertexShader() : GetDesktopVertexShader();
         string fsUiSource = isGles ? GetGlesUiFragmentShader() : GetDesktopUiFragmentShader();
         string fsStressSource = isGles ? GetGlesStressFragmentShader() : GetDesktopStressFragmentShader();
@@ -97,7 +102,7 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
         gl.UseProgram(stressProgram);
         int locStressTime = gl.GetUniformLocation(stressProgram, "uTime");
 
-        // 5. Полноэкранный квад (CCW)
+        // 5. Geometry Quad
         float[] quadVertices = [
             -1.0f, -1.0f,  0.0f, 1.0f,
              1.0f, -1.0f,  1.0f, 1.0f,
@@ -124,7 +129,7 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
         gl.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, 4 * sizeof(float), (void*)(2 * sizeof(float)));
         gl.EnableVertexAttribArray(1);
 
-        // 6. Текстура UI (Чистый GL_RGBA)
+        // 6. UI Texture Buffer
         uint uiTexture = gl.GenTexture();
         gl.ActiveTexture(TextureUnit.Texture0);
         gl.BindTexture(TextureTarget.Texture2D, uiTexture);
@@ -141,7 +146,7 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
 
         uint[] uiPixels = new uint[WinWidth * WinHeight];
 
-        // 7. Ввод (через абстракцию Silk.NET)
+        // 7. Input
         IInputContext input = window.CreateInput();
         foreach (var mouse in input.Mice)
         {
@@ -181,12 +186,11 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
             };
         }
 
-        // 8. Исполнительный цикл
+        // 8. Event and Render Loop
         var perfSw = Stopwatch.StartNew();
         ulong lastFrames = 0;
         float animTime = 0f;
 
-        // Первый принудительный кадр для Wayland/DRI_PRIME
         gl.Viewport(0, 0, (uint)WinWidth, (uint)WinHeight);
         gl.Clear(ClearBufferMask.ColorBufferBit);
         window.SwapBuffers();
@@ -209,10 +213,8 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
             double elapsed = s_isBenchmarking ? s_benchTimer.Elapsed.TotalSeconds : 0.0;
             double tflops = s_isBenchmarking ? (s_currentFps * 1.52) / 1000.0 : 0.0;
 
-            // Отрисовка UI
             var theme = isGles ? ThemePalette.OpenGLES : ThemePalette.OpenGL;
 
-            // Отрисовка UI: Синий для Desktop OpenGL, Фиолетово-розовый для OpenGL ES
             fixed (uint* pUi = uiPixels)
             {
                 PixelUiEngine.Render(
@@ -231,7 +233,6 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
 
             gl.Clear(ClearBufferMask.ColorBufferBit);
 
-            // А) МНОГОПРОХОДНЫЙ СТРЕСС-ТЕСТ GPU
             if (s_isBenchmarking)
             {
                 gl.UseProgram(stressProgram);
@@ -244,14 +245,12 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
                 }
             }
 
-            // Б) Отрисовка чистого UI
             gl.UseProgram(uiProgram);
             gl.ActiveTexture(TextureUnit.Texture0);
             gl.BindTexture(TextureTarget.Texture2D, uiTexture);
             gl.BindVertexArray(vao);
             gl.DrawArrays(PrimitiveType.Triangles, 0, 6);
 
-            // Форсируем сброс очередей для гибридной графики
             gl.Flush();
             window.SwapBuffers();
             s_totalFrames++;
@@ -270,14 +269,12 @@ public static void Run(CancellationToken hostCt, int initialDuration = 0, bool i
             }
         }
 
-        // 9. Освобождение
         gl.DeleteTexture(uiTexture);
         gl.DeleteBuffer(vbo);
         gl.DeleteVertexArray(vao);
         gl.DeleteProgram(uiProgram);
         gl.DeleteProgram(stressProgram);
 
-        s_windowInstance = null;
         Console.WriteLine($"[OpenGLEngine] {apiTitle} context released cleanly. Exit 0.");
     }
 
@@ -388,34 +385,11 @@ void main() {
             s_isCustomFocused = false;
             ToggleBenchmark();
         }
-        else if (PixelUiEngine.Btn10s.Contains(x, y))
-        {
-            s_targetDurationSec = 10;
-            s_customInputBuffer = "10";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.Btn30s.Contains(x, y))
-        {
-            s_targetDurationSec = 30;
-            s_customInputBuffer = "30";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.Btn60s.Contains(x, y))
-        {
-            s_targetDurationSec = 60;
-            s_customInputBuffer = "60";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.BtnUnlimited.Contains(x, y))
-        {
-            s_targetDurationSec = 0;
-            s_customInputBuffer = "";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.InputCustom.Contains(x, y))
-        {
-            s_isCustomFocused = true;
-        }
+        else if (PixelUiEngine.Btn10s.Contains(x, y)) { s_targetDurationSec = 10; s_customInputBuffer = "10"; s_isCustomFocused = false; }
+        else if (PixelUiEngine.Btn30s.Contains(x, y)) { s_targetDurationSec = 30; s_customInputBuffer = "30"; s_isCustomFocused = false; }
+        else if (PixelUiEngine.Btn60s.Contains(x, y)) { s_targetDurationSec = 60; s_customInputBuffer = "60"; s_isCustomFocused = false; }
+        else if (PixelUiEngine.BtnUnlimited.Contains(x, y)) { s_targetDurationSec = 0; s_customInputBuffer = ""; s_isCustomFocused = false; }
+        else if (PixelUiEngine.InputCustom.Contains(x, y)) s_isCustomFocused = true;
         else if (PixelUiEngine.BtnMinus.Contains(x, y))
         {
             s_targetDurationSec = Math.Max(1, s_targetDurationSec - 5);
@@ -428,10 +402,7 @@ void main() {
             s_customInputBuffer = s_targetDurationSec.ToString();
             s_isCustomFocused = false;
         }
-        else
-        {
-            s_isCustomFocused = false;
-        }
+        else s_isCustomFocused = false;
     }
 
     private static void ToggleBenchmark()

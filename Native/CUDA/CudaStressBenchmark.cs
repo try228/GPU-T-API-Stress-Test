@@ -6,16 +6,20 @@ using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 using Silk.NET.Windowing.Glfw;
-using GpuT.Agent.Native.Vulkan;
+using GPU_T.StressTest.Core;
+using GPU_T.StressTest.Native.Vulkan;
 
 using MouseButton = Silk.NET.Input.MouseButton;
 
-namespace GpuT.Agent.Native.CUDA;
+namespace GPU_T.StressTest.Native.CUDA;
 
+/// <summary>
+/// Universal CUDA Driver API compute stress benchmark engine.
+/// </summary>
 public sealed unsafe class CudaStressBenchmark
 {
-    private const int WinWidth = PixelUiEngine.BaseWidth;   // 900
-    private const int WinHeight = PixelUiEngine.BaseHeight; // 550
+    private const int WinWidth = PixelUiEngine.BaseWidth;
+    private const int WinHeight = PixelUiEngine.BaseHeight;
     private const uint GridDimX = 4096;
     private const uint BlockDimX = 256;
     private const nuint BufferSize = GridDimX * BlockDimX * 16; // 16 MB VRAM
@@ -37,7 +41,10 @@ public sealed unsafe class CudaStressBenchmark
     private static nint s_module = nint.Zero;
     private static nint s_function = nint.Zero;
 
-    public static void Run(CancellationToken hostCt, int initialDuration = 0)
+    /// <summary>
+    /// Executes the CUDA Driver stress benchmark on the requested GPU device.
+    /// </summary>
+    public static void Run(CancellationToken hostCt, int initialDuration = 0, int selectedGpuIndex = 0, GpuDeviceDescriptor? targetGpu = null)
     {
         GlfwWindowing.RegisterPlatform();
         GlfwInput.RegisterPlatform();
@@ -47,36 +54,69 @@ public sealed unsafe class CudaStressBenchmark
         s_isBenchmarking = false;
         s_benchTimer.Reset();
 
-        // 1. Инициализация CUDA Driver API
+        // 1. Initialize CUDA Driver API
         int initRes = CudaNative.cuInit(0);
         if (initRes != CudaNative.CUDA_SUCCESS)
-            throw new InvalidOperationException($"cuInit failed ({initRes}). Is NVIDIA driver or ZLUDA installed?");
+        {
+            throw new InvalidOperationException(
+                $"Failed to initialize CUDA Driver API (error code {initRes}). " +
+                $"Ensure 'libcuda.so.1' is available in library search paths.");
+        }
 
         int devCount = 0;
         CudaNative.cuDeviceGetCount(&devCount);
-        if (devCount == 0) throw new InvalidOperationException("No CUDA-capable devices found.");
+        if (devCount == 0)
+        {
+            throw new InvalidOperationException("No CUDA-capable devices detected by the driver or translation layer.");
+        }
+
+        // Collect all available CUDA devices
+        List<(int Ordinal, string Name)> cudaDevices = new();
+        for (int i = 0; i < devCount; i++)
+        {
+            int h = 0;
+            if (CudaNative.cuDeviceGet(&h, i) == CudaNative.CUDA_SUCCESS)
+            {
+                byte* pName = stackalloc byte[256];
+                CudaNative.cuDeviceGetName(pName, 256, h);
+                string name = Marshal.PtrToStringAnsi((nint)pName) ?? $"CUDA Device #{i}";
+                cudaDevices.Add((i, name));
+            }
+        }
+
+        // Match requested GPU strictly
+        int targetOrdinal = MatchCudaDevice(cudaDevices, targetGpu, selectedGpuIndex);
+        if (targetOrdinal < 0)
+        {
+            string available = string.Join(", ", cudaDevices.Select(d => $"[{d.Ordinal}] {d.Name}"));
+            throw new InvalidOperationException(
+                $"The selected GPU '[{selectedGpuIndex}] {targetGpu?.Name ?? "Unknown"}' is not supported by the active CUDA driver/translation layer.\n" +
+                $"  Available CUDA device(s): {available}");
+        }
 
         int devHandle = 0;
-        CudaNative.cuDeviceGet(&devHandle, 0);
+        int getRes = CudaNative.cuDeviceGet(&devHandle, targetOrdinal);
+        if (getRes != CudaNative.CUDA_SUCCESS)
+        {
+            throw new InvalidOperationException($"cuDeviceGet for ordinal {targetOrdinal} failed with code: {getRes}");
+        }
 
-        byte* pDevName = stackalloc byte[256];
-        CudaNative.cuDeviceGetName(pDevName, 256, devHandle);
-        string devName = Marshal.PtrToStringAnsi((nint)pDevName) ?? "NVIDIA CUDA Device";
+        string devName = cudaDevices.First(d => d.Ordinal == targetOrdinal).Name;
 
         Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"[CUDAEngine] API Target:   NVIDIA CUDA Driver API");
-        Console.WriteLine($"[CUDAEngine] CUDA Device:  {devName}");
+        Console.WriteLine($"\n[CUDAEngine] API Target:      NVIDIA CUDA Driver API");
+        Console.WriteLine($"[CUDAEngine] Compute Device:  [{targetOrdinal}] {devName}\n");
         Console.ResetColor();
 
-        // 2. Создание контекста и выделение VRAM
+        // 2. Create Context on target GPU and allocate VRAM
         nint ctx;
         int ctxRes = CudaNative.cuCtxCreate(&ctx, 0, devHandle);
-        if (ctxRes != CudaNative.CUDA_SUCCESS) throw new InvalidOperationException($"cuCtxCreate failed: {ctxRes}");
+        if (ctxRes != CudaNative.CUDA_SUCCESS) throw new InvalidOperationException($"cuCtxCreate failed with code: {ctxRes}");
         s_context = ctx;
 
         nint dptr;
         int memRes = CudaNative.cuMemAlloc(&dptr, BufferSize);
-        if (memRes != CudaNative.CUDA_SUCCESS) throw new InvalidOperationException($"cuMemAlloc failed: {memRes}");
+        if (memRes != CudaNative.CUDA_SUCCESS) throw new InvalidOperationException($"cuMemAlloc failed with code: {memRes}");
         s_dBuffer = dptr;
 
         string ptxSource = GetStressPtxSource();
@@ -86,11 +126,11 @@ public sealed unsafe class CudaStressBenchmark
         {
             nint func;
             int funcRes = CudaNative.cuModuleGetFunction(&func, s_module, pKernelName);
-            if (funcRes != CudaNative.CUDA_SUCCESS) throw new InvalidOperationException($"cuModuleGetFunction failed: {funcRes}");
+            if (funcRes != CudaNative.CUDA_SUCCESS) throw new InvalidOperationException($"cuModuleGetFunction failed with code: {funcRes}");
             s_function = func;
         }
 
-        // 3. Выделенный поток вычислений CUDA
+        // 3. Dedicated compute thread (runs 100% on target CUDA GPU)
         using var computeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCt);
         var computeThread = new Thread(() =>
         {
@@ -133,7 +173,7 @@ public sealed unsafe class CudaStressBenchmark
 
         computeThread.Start();
 
-        // 4. Окно интерфейса на чистом OpenGL 3.3 Core (ThemePalette.Cuda)
+        // 4. UI window (renders on default display context)
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
         winOptions.Title = "GPU-T Render Test & CUDA Driver Agent";
@@ -275,7 +315,7 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
                     s_customInputBuffer, s_isCustomFocused,
                     elapsed, s_currentDps, tflops,
                     null,
-                    ThemePalette.Cuda, // Зеленый стиль NVIDIA
+                    ThemePalette.Cuda,
                     s_mouseX, s_mouseY, animTime);
 
                 gl.ActiveTexture(TextureUnit.Texture0);
@@ -327,10 +367,41 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
                 s_context = nint.Zero;
             }
 
-            Console.WriteLine("[CUDAEngine] CUDA context released. Exit 0.");
+            Console.WriteLine("[CUDAEngine] CUDA context released cleanly. Exit 0.");
         };
 
         window.Run();
+    }
+
+    private static int MatchCudaDevice(List<(int Ordinal, string Name)> devices, GpuDeviceDescriptor? targetGpu, int selectedIndex)
+    {
+        if (devices.Count == 0) return -1;
+
+        if (targetGpu != null)
+        {
+            for (int i = 0; i < devices.Count; i++)
+            {
+                if (devices[i].Name.Contains(targetGpu.Name, StringComparison.OrdinalIgnoreCase) ||
+                    targetGpu.Name.Contains(devices[i].Name, StringComparison.OrdinalIgnoreCase))
+                    return devices[i].Ordinal;
+            }
+
+            string v = targetGpu.Vendor.ToLowerInvariant();
+            for (int i = 0; i < devices.Count; i++)
+            {
+                string d = devices[i].Name.ToLowerInvariant();
+                if ((v == "amd" && (d.Contains("radeon") || d.Contains("amd") || d.Contains("gfx"))) ||
+                    (v == "intel" && (d.Contains("intel") || d.Contains("arc") || d.Contains("graphics"))) ||
+                    (v == "nvidia" && (d.Contains("nvidia") || d.Contains("geforce") || d.Contains("rtx"))))
+                    return devices[i].Ordinal;
+            }
+            return -1;
+        }
+
+        if (selectedIndex >= 0 && selectedIndex < devices.Count)
+            return devices[selectedIndex].Ordinal;
+
+        return -1;
     }
 
     private static nint LoadPtxModule(string ptxSource)
@@ -341,7 +412,7 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         Marshal.FreeHGlobal((nint)pPtx);
 
         if (res != CudaNative.CUDA_SUCCESS)
-            throw new InvalidOperationException($"cuModuleLoadData failed ({res})");
+            throw new InvalidOperationException($"cuModuleLoadData failed with code ({res})");
 
         return module;
     }

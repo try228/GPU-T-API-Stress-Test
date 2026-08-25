@@ -1,42 +1,34 @@
-using System.Diagnostics;
+namespace GPU_T.StressTest.Runtimes;
 
-namespace GpuT.Agent.Runtimes;
-
-public enum RuntimeType
-{
-    Wine,
-    Proton
-}
-
-public sealed record RuntimeEnvironment(
-    string Name,
-    RuntimeType Type,
-    string ExecutablePath,
-    string? PrefixPath = null
-);
-
+/// <summary>
+/// Scans Linux host filesystem for Wine and Proton installations across Steam, Lutris, CachyOS, and system paths.
+/// </summary>
 public static class RuntimeScanner
 {
+    /// <summary>
+    /// Discovers all available Wine and Proton environments.
+    /// </summary>
+    /// <returns>A deduplicated list of runtime environments.</returns>
     public static List<RuntimeEnvironment> DiscoverAll()
     {
         var runtimes = new List<RuntimeEnvironment>();
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        // 1. Поиск системного Wine и Wine-Staging
+        // 1. System Wine & Wine Staging
         ProbeSystemWine(runtimes);
 
-        // 2. Поиск Proton в Steam (Native)
+        // 2. Steam Proton (Native)
         ProbeSteamProton(Path.Combine(home, ".local/share/Steam"), runtimes);
         ProbeSteamProton(Path.Combine(home, ".steam/root"), runtimes);
         ProbeSteamProton(Path.Combine(home, ".steam/steam"), runtimes);
 
-        // 3. Поиск Proton в Steam (Flatpak)
+        // 3. Steam Proton (Flatpak)
         ProbeSteamProton(Path.Combine(home, ".var/app/com.valvesoftware.Steam/data/Steam"), runtimes);
 
-        // 4. Поиск в Lutris Wine/Proton runners
+        // 4. Lutris Wine & Proton Runners
         ProbeLutrisRunners(Path.Combine(home, ".local/share/lutris/runners"), runtimes);
 
-        // 5. CachyOS / Системные директории совместимости
+        // 5. CachyOS / System-wide compatibility tools
         ProbeDirectoryProton("/usr/share/steam/compatibilitytools.d", runtimes);
 
         return runtimes.DistinctBy(r => r.ExecutablePath).ToList();
@@ -51,8 +43,8 @@ public static class RuntimeScanner
             {
                 list.Add(new RuntimeEnvironment(
                     Name: Path.GetFileName(path),
-                                                Type: RuntimeType.Wine,
-                                                ExecutablePath: path
+                    Type: RuntimeType.Wine,
+                    ExecutablePath: path
                 ));
             }
         }
@@ -62,11 +54,11 @@ public static class RuntimeScanner
     {
         if (!Directory.Exists(steamRoot)) return;
 
-        // Custom tools (Proton-GE, Proton-CachyOS)
+        // Custom tools (Proton-GE, Proton-CachyOS, etc.)
         string customTools = Path.Combine(steamRoot, "compatibilitytools.d");
         ProbeDirectoryProton(customTools, list);
 
-        // Official Steamapps Proton (Proton 8, 9, Experimental)
+        // Official Steamapps Proton
         string commonDir = Path.Combine(steamRoot, "steamapps/common");
         if (Directory.Exists(commonDir))
         {
@@ -77,8 +69,8 @@ public static class RuntimeScanner
                 {
                     list.Add(new RuntimeEnvironment(
                         Name: Path.GetFileName(dir),
-                                                    Type: RuntimeType.Proton,
-                                                    ExecutablePath: protonBin
+                        Type: RuntimeType.Proton,
+                        ExecutablePath: protonBin
                     ));
                 }
             }
@@ -96,8 +88,8 @@ public static class RuntimeScanner
             {
                 list.Add(new RuntimeEnvironment(
                     Name: Path.GetFileName(sub),
-                                                Type: RuntimeType.Proton,
-                                                ExecutablePath: protonBin
+                    Type: RuntimeType.Proton,
+                    ExecutablePath: protonBin
                 ));
             }
         }
@@ -115,8 +107,8 @@ public static class RuntimeScanner
                 {
                     list.Add(new RuntimeEnvironment(
                         Name: $"Lutris-{Path.GetFileName(dir)}",
-                                                    Type: RuntimeType.Wine,
-                                                    ExecutablePath: bin
+                        Type: RuntimeType.Wine,
+                        ExecutablePath: bin
                     ));
                 }
             }

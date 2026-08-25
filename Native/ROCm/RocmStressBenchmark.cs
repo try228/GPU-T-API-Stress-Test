@@ -6,16 +6,20 @@ using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 using Silk.NET.Windowing.Glfw;
-using GpuT.Agent.Native.Vulkan;
+using GPU_T.StressTest.Core;
+using GPU_T.StressTest.Native.Vulkan;
 
 using MouseButton = Silk.NET.Input.MouseButton;
 
-namespace GpuT.Agent.Native.ROCm;
+namespace GPU_T.StressTest.Native.ROCm;
 
+/// <summary>
+/// Universal AMD ROCm / HIP Native Runtime compute stress benchmark engine.
+/// </summary>
 public sealed unsafe class RocmStressBenchmark
 {
-    private const int WinWidth = PixelUiEngine.BaseWidth;   // 900
-    private const int WinHeight = PixelUiEngine.BaseHeight; // 550
+    private const int WinWidth = PixelUiEngine.BaseWidth;
+    private const int WinHeight = PixelUiEngine.BaseHeight;
     private const uint GridDimX = 4096;
     private const uint BlockDimX = 256;
     private const nuint BufferSize = GridDimX * BlockDimX * 16; // 16 MB VRAM
@@ -26,20 +30,25 @@ public sealed unsafe class RocmStressBenchmark
     private static bool s_isCustomFocused = false;
 
     private static Stopwatch s_benchTimer = new();
-    private static double s_currentDps = 0;
-
     private static int s_mouseX = 0;
     private static int s_mouseY = 0;
 
+    private static int s_activeGpuOrdinal = 0;
     private static Process? s_workerProcess = null;
 
-    // ВОРКЕР 100% ВЫЧИСЛЕНИЙ (Исполняется в изолированном процессе)
-    public static void RunWorkerProcess(CancellationToken ct)
+    /// <summary>
+    /// Executes the isolated worker process on the requested HIP device ordinal.
+    /// </summary>
+    public static void RunWorkerProcess(CancellationToken ct, int targetDeviceIndex = 0)
     {
         int initRes = RocmNative.hipInit(0);
         if (initRes != RocmNative.HIP_SUCCESS) return;
 
-        RocmNative.hipSetDevice(0);
+        int devCount = 0;
+        RocmNative.hipGetDeviceCount(&devCount);
+        if (devCount == 0 || targetDeviceIndex >= devCount) return;
+
+        RocmNative.hipSetDevice(targetDeviceIndex);
 
         nint dptr;
         int memRes = RocmNative.hipMalloc(&dptr, BufferSize);
@@ -81,8 +90,10 @@ public sealed unsafe class RocmStressBenchmark
         RocmNative.hipDeviceReset();
     }
 
-    // ГЛАВНЫЙ ПРОЦЕСС UI (0% нагрузки в покое)
-    public static void Run(CancellationToken hostCt, int initialDuration = 0)
+    /// <summary>
+    /// Runs the AMD ROCm UI frontend and manages the background compute worker lifecycle.
+    /// </summary>
+    public static void Run(CancellationToken hostCt, int initialDuration = 0, int selectedGpuIndex = 0, GpuDeviceDescriptor? targetGpu = null)
     {
         GlfwWindowing.RegisterPlatform();
         GlfwInput.RegisterPlatform();
@@ -92,7 +103,48 @@ public sealed unsafe class RocmStressBenchmark
         s_isBenchmarking = false;
         s_benchTimer.Reset();
 
-        string devName = "AMD Radeon RX 7900 GRE (ROCm)";
+        int initRes = RocmNative.hipInit(0);
+        if (initRes != RocmNative.HIP_SUCCESS)
+        {
+            throw new InvalidOperationException(
+                $"Failed to initialize AMD ROCm / HIP runtime (error code {initRes}). " +
+                $"Ensure 'libamdhip64.so' is installed and user permissions for /dev/kfd are configured.");
+        }
+
+        int devCount = 0;
+        RocmNative.hipGetDeviceCount(&devCount);
+        if (devCount == 0)
+        {
+            throw new InvalidOperationException("No ROCm-capable compute devices detected by the HIP driver.");
+        }
+
+        // Collect all available HIP devices
+        List<(int Ordinal, string Name)> hipDevices = new();
+        for (int i = 0; i < devCount; i++)
+        {
+            byte* pName = stackalloc byte[256];
+            RocmNative.hipDeviceGetName(pName, 256, i);
+            string name = Marshal.PtrToStringAnsi((nint)pName) ?? $"HIP Device #{i}";
+            hipDevices.Add((i, name));
+        }
+
+        // Match requested GPU strictly
+        int targetOrdinal = MatchHipDevice(hipDevices, targetGpu, selectedGpuIndex);
+        if (targetOrdinal < 0)
+        {
+            string available = string.Join(", ", hipDevices.Select(d => $"[{d.Ordinal}] {d.Name}"));
+            throw new InvalidOperationException(
+                $"The selected GPU '[{selectedGpuIndex}] {targetGpu?.Name ?? "Unknown"}' is not supported by the AMD ROCm / HIP runtime.\n" +
+                $"  Available ROCm device(s): {available}");
+        }
+
+        s_activeGpuOrdinal = targetOrdinal;
+        string devName = hipDevices.First(d => d.Ordinal == targetOrdinal).Name;
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"\n[ROCmEngine] API Target:      AMD ROCm / HIP Runtime");
+        Console.WriteLine($"[ROCmEngine] Compute Device:  [{targetOrdinal}] {devName}\n");
+        Console.ResetColor();
 
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
@@ -223,7 +275,7 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
             if (s_isBenchmarking) animTime += 0.02f;
 
             double elapsed = s_isBenchmarking ? s_benchTimer.Elapsed.TotalSeconds : 0.0;
-            double tflops = s_isBenchmarking ? 34.5 : 0.0; // 100% Насыщение RDNA3
+            double tflops = s_isBenchmarking ? 34.5 : 0.0;
 
             fixed (uint* pUi = uiPixels)
             {
@@ -267,6 +319,37 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         };
 
         window.Run();
+    }
+
+    private static int MatchHipDevice(List<(int Ordinal, string Name)> devices, GpuDeviceDescriptor? targetGpu, int selectedIndex)
+    {
+        if (devices.Count == 0) return -1;
+
+        if (targetGpu != null)
+        {
+            for (int i = 0; i < devices.Count; i++)
+            {
+                if (devices[i].Name.Contains(targetGpu.Name, StringComparison.OrdinalIgnoreCase) ||
+                    targetGpu.Name.Contains(devices[i].Name, StringComparison.OrdinalIgnoreCase))
+                    return devices[i].Ordinal;
+            }
+
+            string v = targetGpu.Vendor.ToLowerInvariant();
+            for (int i = 0; i < devices.Count; i++)
+            {
+                string d = devices[i].Name.ToLowerInvariant();
+                if ((v == "amd" && (d.Contains("radeon") || d.Contains("amd") || d.Contains("gfx"))) ||
+                    (v == "intel" && (d.Contains("intel") || d.Contains("arc") || d.Contains("graphics"))) ||
+                    (v == "nvidia" && (d.Contains("nvidia") || d.Contains("geforce") || d.Contains("rtx"))))
+                    return devices[i].Ordinal;
+            }
+            return -1;
+        }
+
+        if (selectedIndex >= 0 && selectedIndex < devices.Count)
+            return devices[selectedIndex].Ordinal;
+
+        return -1;
     }
 
     private static nint CompileHipKernel(string source)
@@ -378,7 +461,6 @@ extern ""C"" __global__ void rocm_stress_kernel(float4* data, float time) {
         else StartBenchmark();
     }
 
-    // Запуск фонового процесса вычислений
     private static void StartBenchmark()
     {
         if (s_isBenchmarking) return;
@@ -387,17 +469,16 @@ extern ""C"" __global__ void rocm_stress_kernel(float4* data, float time) {
         s_benchTimer.Restart();
 
         string exePath = Environment.ProcessPath ?? "/proc/self/exe";
-        ProcessStartInfo psi = new(exePath, "--rocm-worker")
+        ProcessStartInfo psi = new(exePath, $"--rocm-worker {s_activeGpuOrdinal}")
         {
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
         s_workerProcess = Process.Start(psi);
-        Console.WriteLine("[UI] >> BENCHMARK STARTED (ROCm Worker Spawned) <<");
+        Console.WriteLine($"[UI] >> BENCHMARK STARTED (ROCm Worker Spawned on Ordinal {s_activeGpuOrdinal}) <<");
     }
 
-    // Остановка: прибиваем процесс воркера -> ядро Linux МГНОВЕННО закрывает /dev/kfd и сбрасывает GPU в 0%
     private static void StopBenchmark()
     {
         s_isBenchmarking = false;

@@ -1,7 +1,10 @@
 using System.Runtime.InteropServices;
 
-namespace GpuT.Agent.Native.OpenCL;
+namespace GPU_T.StressTest.Native.OpenCL;
 
+/// <summary>
+/// Direct P/Invoke bindings for the OpenCL ICD Loader (libOpenCL.so.1).
+/// </summary>
 public static unsafe partial class OpenClNative
 {
     private const string LibName = "libOpenCL.so.1";
@@ -14,6 +17,8 @@ public static unsafe partial class OpenClNative
     public const uint CL_DEVICE_NAME = 0x102B;
     public const uint CL_DEVICE_VENDOR = 0x102C;
     public const uint CL_DRIVER_VERSION = 0x102D;
+
+    public const uint CL_CONTEXT_PLATFORM = 0x1084; // Critical for multi-GPU binding
 
     public const ulong CL_MEM_READ_WRITE = 1 << 0;
 

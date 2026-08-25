@@ -1,14 +1,18 @@
 using System.Runtime.InteropServices;
 
-namespace GpuT.Agent.Native.OneAPI;
+namespace GPU_T.StressTest.Native.OneAPI;
 
+/// <summary>
+/// Native P/Invoke bindings for the Intel oneAPI Level Zero Core API (libze_loader.so.1).
+/// </summary>
 public static unsafe partial class OneApiNative
 {
     private const string ZeLib = "libze_loader.so.1";
 
+    /// <summary>Level Zero API success status code.</summary>
     public const int ZE_RESULT_SUCCESS = 0;
     
-    // ЭТАЛОННЫЕ СИСТЕМНЫЕ КОДЫ DDI LEVEL ZERO
+    // Standard Level Zero DDI structure type codes
     public const int ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES = 0x0;
     public const int ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES = 0x2;
     public const int ZE_STRUCTURE_TYPE_CONTEXT_DESC = 0xd;             // 13
@@ -94,27 +98,35 @@ public static unsafe partial class OneApiNative
     public static partial int zeCommandListAppendLaunchKernel(nint hCommandList, nint hKernel, ZeGroupCount* pLaunchFuncArgs, nint hSignalEvent, uint numWaitEvents, nint* phWaitEvents);
 }
 
+/// <summary>Level Zero context descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeContextDesc { public int stype; public void* pNext; public uint flags; }
 
+/// <summary>Level Zero command queue descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeCommandQueueDesc { public int stype; public void* pNext; public uint ordinal; public uint index; public uint flags; public int mode; public int priority; }
 
+/// <summary>Level Zero command list descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeCommandListDesc { public int stype; public void* pNext; public uint commandQueueGroupOrdinal; public uint flags; }
 
+/// <summary>Level Zero device memory allocation descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeDeviceMemAllocDesc { public int stype; public void* pNext; public uint flags; public uint ordinal; }
 
+/// <summary>Level Zero module creation descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeModuleDesc { public int stype; public void* pNext; public int format; public nuint inputSize; public byte* pInputModule; public byte* pBuildFlags; public void* pConstants; }
 
+/// <summary>Level Zero kernel descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeKernelDesc { public int stype; public void* pNext; public uint flags; public byte* pKernelName; }
 
+/// <summary>Level Zero kernel thread group dispatch dimensions.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct ZeGroupCount { public uint groupCountX; public uint groupCountY; public uint groupCountZ; }
 
+/// <summary>Level Zero device properties and hardware topology descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ZeDeviceProperties
 {

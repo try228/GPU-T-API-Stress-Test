@@ -6,18 +6,21 @@ using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 using Silk.NET.Windowing.Glfw;
-using GpuT.Agent.Native.Vulkan;
+using GPU_T.StressTest.Native.Vulkan;
 
 using MouseButton = Silk.NET.Input.MouseButton;
 
-namespace GpuT.Agent.Native.OpenCL;
+namespace GPU_T.StressTest.Native.OpenCL;
 
+/// <summary>
+/// OpenCL 1.2+ and Mesa Rusticl compute stress benchmark engine.
+/// </summary>
 public sealed unsafe class OpenClStressBenchmark
 {
     private const int WinWidth = PixelUiEngine.BaseWidth;   // 900
     private const int WinHeight = PixelUiEngine.BaseHeight; // 550
-    private const nuint GlobalThreads = 1048576; // 1 048 576 float4 потоков (~4.2M float значений)
-    private const nuint LocalThreads = 256;      // Оптимальный размер воркгруппы для NVIDIA (8 варпов) / AMD / Intel
+    private const nuint GlobalThreads = 1048576; // 1,048,576 float4 threads (~4.2M float elements)
+    private const nuint LocalThreads = 256;      // Optimal workgroup size
     private const nuint BufferSize = GlobalThreads * 16; // 16 MB VRAM
 
     private static volatile bool s_isBenchmarking = false;
@@ -38,7 +41,15 @@ public sealed unsafe class OpenClStressBenchmark
     private static nint s_program = nint.Zero;
     private static nint s_kernel = nint.Zero;
 
-    public static void Run(CancellationToken hostCt, int initialDuration = 0, bool isRusticl = false)
+    /// <summary>
+    /// Executes the OpenCL or Rusticl stress benchmark and launches the OpenGL UI frontend.
+    /// </summary>
+    /// <param name="hostCt">Host cancellation token.</param>
+    /// <param name="initialDuration">Initial duration in seconds (0 = unlimited).</param>
+    /// <param name="isRusticl">True if targeting Mesa Rusticl explicitly.</param>
+    /// <param name="gpuArg">GPU filter string or numeric index.</param>
+    /// <param name="fallbackIndex">Default numeric index.</param>
+    public static void Run(CancellationToken hostCt, int initialDuration = 0, bool isRusticl = false, string? gpuArg = null, int fallbackIndex = 0)
     {
         GlfwWindowing.RegisterPlatform();
         GlfwInput.RegisterPlatform();
@@ -51,42 +62,50 @@ public sealed unsafe class OpenClStressBenchmark
         string apiTitle = isRusticl ? "Rusticl (Mesa Rust OpenCL)" : "OpenCL 1.2+ Compute";
         var theme = isRusticl ? ThemePalette.Rusticl : ThemePalette.OpenCL;
 
-        // 1. Поиск лучшей видеокарты (NVIDIA / AMD / Intel dGPU)
-        (nint platform, nint device, string devName, string platformName) = SelectBestOpenClDevice(isRusticl);
+        // 1. Discover OpenCL devices and strictly match target without falling back
+        (nint platform, nint device, string devName, string platformName, int devIdx) = SelectOpenClDevice(gpuArg, fallbackIndex, isRusticl);
         
         if (platform == nint.Zero || device == nint.Zero)
-            throw new InvalidOperationException($"No suitable OpenCL platform/device found for target: {apiTitle}");
+        {
+            string filter = !string.IsNullOrWhiteSpace(gpuArg) ? $"'{gpuArg}'" : $"index [{fallbackIndex}]";
+            throw new InvalidOperationException($"[OpenCLEngine] The selected GPU {filter} was not found among available {apiTitle} devices.");
+        }
 
         string devVendor = GetClDeviceInfo(device, OpenClNative.CL_DEVICE_VENDOR);
         string drvVersion = GetClDeviceInfo(device, OpenClNative.CL_DRIVER_VERSION);
 
         Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"[OpenCLEngine] API Target:        {apiTitle}");
-        Console.WriteLine($"[OpenCLEngine] Selected Platform: {platformName}");
-        Console.WriteLine($"[OpenCLEngine] Selected Device:   {devName} ({devVendor})");
-        Console.WriteLine($"[OpenCLEngine] Driver Version:    {drvVersion}");
+        Console.WriteLine($"\n[OpenCLEngine] API Target:        {apiTitle}");
+        Console.WriteLine($"[OpenCLEngine] Bound Platform:    {platformName}");
+        Console.WriteLine($"[OpenCLEngine] Active Compute GPU: [{devIdx}] {devName} ({devVendor})");
+        Console.WriteLine($"[OpenCLEngine] Driver Version:    {drvVersion}\n");
         Console.ResetColor();
 
-        // 2. Создание Context и Queue
+        // 2. Pass CL_CONTEXT_PLATFORM (0x1084) to bind context strictly to the target platform
+        nint* contextProps = stackalloc nint[3];
+        contextProps[0] = 0x1084; // CL_CONTEXT_PLATFORM
+        contextProps[1] = platform;
+        contextProps[2] = 0;
+
         int err = 0;
-        s_context = OpenClNative.clCreateContext(null, 1, &device, null, null, &err);
-        if (err != 0) throw new InvalidOperationException($"clCreateContext failed: {err}");
+        s_context = OpenClNative.clCreateContext(contextProps, 1, &device, null, null, &err);
+        if (err != 0) throw new InvalidOperationException($"clCreateContext failed with code: {err}");
 
         s_queue = OpenClNative.clCreateCommandQueue(s_context, device, 0, &err);
-        if (err != 0) throw new InvalidOperationException($"clCreateCommandQueue failed: {err}");
+        if (err != 0) throw new InvalidOperationException($"clCreateCommandQueue failed with code: {err}");
 
-        // 3. Выделение буфера VRAM (16 MB)
+        // 3. Allocate VRAM buffer (16 MB)
         s_clBuffer = OpenClNative.clCreateBuffer(s_context, OpenClNative.CL_MEM_READ_WRITE, BufferSize, null, &err);
-        if (err != 0) throw new InvalidOperationException($"clCreateBuffer failed: {err}");
+        if (err != 0) throw new InvalidOperationException($"clCreateBuffer failed with code: {err}");
 
-        // 4. Компиляция высоконагруженного OpenCL C ядра (256 FMA)
+        // 4. Compile compute stress kernel
         string clSource = GetStressKernelSource();
         s_program = BuildClProgram(s_context, device, clSource);
 
         fixed (byte* pKernelName = "stress_kernel"u8)
         {
             s_kernel = OpenClNative.clCreateKernel(s_program, pKernelName, &err);
-            if (err != 0) throw new InvalidOperationException($"clCreateKernel failed: {err}");
+            if (err != 0) throw new InvalidOperationException($"clCreateKernel failed with code: {err}");
 
             fixed (nint* pBuf = &s_clBuffer)
             {
@@ -94,7 +113,7 @@ public sealed unsafe class OpenClStressBenchmark
             }
         }
 
-        // 5. Запуск выделенного фонового потока 100% вычислений
+        // 5. Compute Thread: 100% Saturation on the chosen OpenCL GPU
         using var computeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCt);
         var computeThread = new Thread(() =>
         {
@@ -113,14 +132,13 @@ public sealed unsafe class OpenClStressBenchmark
                 timeVal += 0.05f;
                 OpenClNative.clSetKernelArg(s_kernel, 1, (nuint)sizeof(float), &timeVal);
 
-                // Забиваем аппаратную очередь непрерывными пакетами без пауз
                 for (int p = 0; p < 16; p++)
                 {
                     OpenClNative.clEnqueueNDRangeKernel(s_queue, s_kernel, 1, null, &gws, &lws, 0, null, null);
                     s_totalDispatches++;
                 }
                 OpenClNative.clFlush(s_queue);
-                OpenClNative.clFinish(s_queue); // Синхронизация пачки для непрерывной 100% загрузки
+                OpenClNative.clFinish(s_queue);
             }
         })
         {
@@ -130,10 +148,11 @@ public sealed unsafe class OpenClStressBenchmark
 
         computeThread.Start();
 
-        // 6. Создание окна UI
+        // 6. UI Window (renders reliably via default display presentation)
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
         winOptions.Title = $"GPU-T Render Test & {apiTitle} Stress Agent";
+        winOptions.API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 3));
         winOptions.VSync = false;
         winOptions.WindowBorder = WindowBorder.Fixed;
         winOptions.IsVisible = true;
@@ -272,7 +291,6 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
             }
 
             double elapsed = s_isBenchmarking ? s_benchTimer.Elapsed.TotalSeconds : 0.0;
-            // 1 048 576 потоков * 4 float * 256 FMA * 2 FLOPs ≈ 2.15 GFLOP на диспатч
             double tflops = s_isBenchmarking ? (s_currentDps * 2.15) / 1000.0 : 0.0;
 
             fixed (uint* pUi = uiPixels)
@@ -341,39 +359,43 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
                 s_context = nint.Zero;
             }
 
-            Console.WriteLine($"[OpenCLEngine] {apiTitle} context released. Exit 0.");
+            Console.WriteLine($"[OpenCLEngine] {apiTitle} context released cleanly. Exit 0.");
         };
 
         window.Run();
     }
 
-    private static (nint Platform, nint Device, string DevName, string PlatformName) SelectBestOpenClDevice(bool isRusticl)
+    private static (nint Platform, nint Device, string DevName, string PlatformName, int Index) SelectOpenClDevice(string? gpuArg, int fallbackIndex, bool isRusticl)
     {
         uint numPlatforms = 0;
-        OpenClNative.clGetPlatformIDs(0, null, &numPlatforms);
-        if (numPlatforms == 0) return (nint.Zero, nint.Zero, "", "");
+        int pRes = OpenClNative.clGetPlatformIDs(0, null, &numPlatforms);
+        if (pRes != OpenClNative.CL_SUCCESS || numPlatforms == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"[OpenCLEngine] clGetPlatformIDs returned code {pRes}, 0 OpenCL platforms found.");
+            Console.ResetColor();
+            return (nint.Zero, nint.Zero, "", "", 0);
+        }
 
         nint* platforms = stackalloc nint[(int)numPlatforms];
         OpenClNative.clGetPlatformIDs(numPlatforms, platforms, null);
 
+        List<(nint Platform, nint Device, string DevName, string PlatformName)> deviceList = new();
+
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine($"[OpenCL Discovery] Found {numPlatforms} platform(s):");
-
-        nint bestPlatform = nint.Zero;
-        nint bestDevice = nint.Zero;
-        string bestDevName = "";
-        string bestPlatformName = "";
-        int highestScore = -1;
 
         for (uint i = 0; i < numPlatforms; i++)
         {
             string pName = GetClPlatformInfo(platforms[i], OpenClNative.CL_PLATFORM_NAME);
             string pVendor = GetClPlatformInfo(platforms[i], OpenClNative.CL_PLATFORM_VENDOR);
-            Console.WriteLine($"  [{i}] Platform: \"{pName}\" (Vendor: \"{pVendor}\")");
+
+            if (isRusticl && !pName.Contains("rusticl", StringComparison.OrdinalIgnoreCase))
+                continue;
 
             uint devCount = 0;
-            OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, 0, null, &devCount);
-            if (devCount == 0) continue;
+            int dRes = OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, 0, null, &devCount);
+            if (dRes != OpenClNative.CL_SUCCESS || devCount == 0) continue;
 
             nint* devices = stackalloc nint[(int)devCount];
             OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, devCount, devices, null);
@@ -381,75 +403,56 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
             for (uint d = 0; d < devCount; d++)
             {
                 string dName = GetClDeviceInfo(devices[d], OpenClNative.CL_DEVICE_NAME);
-                string dVendor = GetClDeviceInfo(devices[d], OpenClNative.CL_DEVICE_VENDOR);
-                Console.WriteLine($"       -> Device #{d}: \"{dName}\" (Vendor: \"{dVendor}\")");
-
-                int score = CalculateDeviceScore(pName, pVendor, dName, dVendor, isRusticl);
-
-                if (score > highestScore)
-                {
-                    highestScore = score;
-                    bestPlatform = platforms[i];
-                    bestDevice = devices[d];
-                    bestDevName = dName;
-                    bestPlatformName = pName;
-                }
+                Console.WriteLine($"  [{deviceList.Count}] {dName} on Platform \"{pName}\" ({pVendor})");
+                deviceList.Add((platforms[i], devices[d], dName, pName));
             }
         }
         Console.ResetColor();
 
-        return (bestPlatform, bestDevice, bestDevName, bestPlatformName);
-    }
-
-    private static int CalculateDeviceScore(string pName, string pVendor, string dName, string dVendor, bool isRusticl)
-    {
-        string fullInfo = $"{pName} {pVendor} {dName} {dVendor}".ToLowerInvariant();
-
-        if (isRusticl)
+        if (deviceList.Count == 0)
         {
-            // Если запрошен режим Rusticl, платформы Mesa Rusticl получают максимальный приоритет
-            if (pName.Contains("rusticl", StringComparison.OrdinalIgnoreCase))
+            return (nint.Zero, nint.Zero, "", "", 0);
+        }
+
+        // 1. Explicit GPU parameter matching (-g / --gpu)
+        if (!string.IsNullOrWhiteSpace(gpuArg))
+        {
+            // Explicit numeric index match
+            if (int.TryParse(gpuArg, out int explicitIdx))
             {
-                int score = 2000;
-                if (fullInfo.Contains("radeon") || fullInfo.Contains("amd")) score += 300;
-                if (fullInfo.Contains("nvidia") || fullInfo.Contains("geforce") || fullInfo.Contains("rtx")) score += 300;
-                if (fullInfo.Contains("intel") || fullInfo.Contains("arc")) score += 100;
-                return score;
+                if (explicitIdx >= 0 && explicitIdx < deviceList.Count)
+                {
+                    var match = deviceList[explicitIdx];
+                    return (match.Platform, match.Device, match.DevName, match.PlatformName, explicitIdx);
+                }
+
+                // Out of range index -> fail directly, do NOT fallback
+                return (nint.Zero, nint.Zero, "", "", 0);
             }
-            return 10; // Не Rusticl платформы получают минимальный вес
+
+            // Name / Substring match
+            for (int i = 0; i < deviceList.Count; i++)
+            {
+                var entry = deviceList[i];
+                if (entry.DevName.Contains(gpuArg, StringComparison.OrdinalIgnoreCase) ||
+                    entry.PlatformName.Contains(gpuArg, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (entry.Platform, entry.Device, entry.DevName, entry.PlatformName, i);
+                }
+            }
+
+            // Name not found -> fail directly, do NOT fallback
+            return (nint.Zero, nint.Zero, "", "", 0);
         }
 
-        // Обычный режим (приоритет официальным дискретным GPU NVIDIA / AMD / Intel)
-        int baseScore = 0;
-
-        // 1. NVIDIA (CUDA платформы и GPU)
-        if (fullInfo.Contains("nvidia") || fullInfo.Contains("cuda") || fullInfo.Contains("geforce") || fullInfo.Contains("rtx") || fullInfo.Contains("quadro") || fullInfo.Contains("tesla"))
+        // 2. Default index when -g is omitted
+        if (fallbackIndex >= 0 && fallbackIndex < deviceList.Count)
         {
-            baseScore += 1000;
-        }
-        // 2. AMD (ROCm / PAL / Radeon)
-        else if (fullInfo.Contains("amd") || fullInfo.Contains("advanced micro devices") || fullInfo.Contains("radeon"))
-        {
-            baseScore += 950;
-        }
-        // 3. Intel Arc / Дискретная графика
-        else if (fullInfo.Contains("arc") || fullInfo.Contains("iris") || fullInfo.Contains("intel"))
-        {
-            baseScore += 700;
-        }
-        // 4. Fallback для других GPU
-        else
-        {
-            baseScore += 300;
+            var target = deviceList[fallbackIndex];
+            return (target.Platform, target.Device, target.DevName, target.PlatformName, fallbackIndex);
         }
 
-        // Штраф для чисто процессорных / софтверных эмуляций
-        if (fullInfo.Contains("cpu") || fullInfo.Contains("pocl") || fullInfo.Contains("llvmpipe") || fullInfo.Contains("portable computing language"))
-        {
-            baseScore -= 600;
-        }
-
-        return Math.Max(1, baseScore);
+        return (nint.Zero, nint.Zero, "", "", 0);
     }
 
     private static string GetClPlatformInfo(nint platform, uint param)
@@ -482,7 +485,6 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         Marshal.FreeHGlobal((nint)pSrc);
         if (err != 0) throw new InvalidOperationException($"clCreateProgramWithSource failed: {err}");
 
-        // Оптимизирующие флаги для мгновенной сборки Clang/LLVM в Rusticl, NVIDIA CUDA и AMD ROCm
         fixed (byte* pOpts = "-cl-fast-relaxed-math -cl-mad-enable"u8)
         {
             int buildRes = OpenClNative.clBuildProgram(program, 1, &device, pOpts, null, null);
@@ -503,7 +505,6 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         return program;
     }
 
-    // 256 шагов тяжелой SIMD-математики (FMA) на каждый поток
     private static string GetStressKernelSource() => @"
 __kernel void stress_kernel(__global float4* data, float time) {
     int gid = get_global_id(0);
@@ -551,34 +552,11 @@ __kernel void stress_kernel(__global float4* data, float time) {
             s_isCustomFocused = false;
             ToggleBenchmark();
         }
-        else if (PixelUiEngine.Btn10s.Contains(x, y))
-        {
-            s_targetDurationSec = 10;
-            s_customInputBuffer = "10";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.Btn30s.Contains(x, y))
-        {
-            s_targetDurationSec = 30;
-            s_customInputBuffer = "30";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.Btn60s.Contains(x, y))
-        {
-            s_targetDurationSec = 60;
-            s_customInputBuffer = "60";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.BtnUnlimited.Contains(x, y))
-        {
-            s_targetDurationSec = 0;
-            s_customInputBuffer = "";
-            s_isCustomFocused = false;
-        }
-        else if (PixelUiEngine.InputCustom.Contains(x, y))
-        {
-            s_isCustomFocused = true;
-        }
+        else if (PixelUiEngine.Btn10s.Contains(x, y)) { s_targetDurationSec = 10; s_customInputBuffer = "10"; s_isCustomFocused = false; }
+        else if (PixelUiEngine.Btn30s.Contains(x, y)) { s_targetDurationSec = 30; s_customInputBuffer = "30"; s_isCustomFocused = false; }
+        else if (PixelUiEngine.Btn60s.Contains(x, y)) { s_targetDurationSec = 60; s_customInputBuffer = "60"; s_isCustomFocused = false; }
+        else if (PixelUiEngine.BtnUnlimited.Contains(x, y)) { s_targetDurationSec = 0; s_customInputBuffer = ""; s_isCustomFocused = false; }
+        else if (PixelUiEngine.InputCustom.Contains(x, y)) s_isCustomFocused = true;
         else if (PixelUiEngine.BtnMinus.Contains(x, y))
         {
             s_targetDurationSec = Math.Max(1, s_targetDurationSec - 5);
@@ -591,10 +569,7 @@ __kernel void stress_kernel(__global float4* data, float time) {
             s_customInputBuffer = s_targetDurationSec.ToString();
             s_isCustomFocused = false;
         }
-        else
-        {
-            s_isCustomFocused = false;
-        }
+        else s_isCustomFocused = false;
     }
 
     private static void ToggleBenchmark()

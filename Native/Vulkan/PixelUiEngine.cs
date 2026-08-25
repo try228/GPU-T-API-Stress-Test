@@ -1,5 +1,8 @@
-namespace GpuT.Agent.Native.Vulkan;
+namespace GPU_T.StressTest.Native.Vulkan;
 
+/// <summary>
+/// Color and styling themes matching individual graphics and compute APIs.
+/// </summary>
 public enum ThemePalette
 {
     Vulkan,
@@ -15,11 +18,17 @@ public enum ThemePalette
     WineD3d
 }
 
+/// <summary>
+/// Software pixel rendering engine for procedural HUD and UI controls.
+/// </summary>
 public static class PixelUiEngine
 {
     public const int BaseWidth = 900;
     public const int BaseHeight = 550;
 
+    /// <summary>
+    /// 2D bounding box rectangle.
+    /// </summary>
     public struct Rect
     {
         public int X, Y, W, H;
@@ -37,6 +46,11 @@ public static class PixelUiEngine
     public static readonly Rect BtnMinus = new(730, 75, 45, 38);
     public static readonly Rect BtnPlus = new(783, 75, 45, 38);
 
+    /// <summary>
+    /// Cleans and formats raw GPU driver strings for clean UI display.
+    /// </summary>
+    /// <param name="raw">Raw GPU name from driver.</param>
+    /// <returns>Formatted device name.</returns>
     public static string FormatGpuName(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Generic GPU";
@@ -73,6 +87,9 @@ public static class PixelUiEngine
         return raw;
     }
 
+    /// <summary>
+    /// Renders the complete UI frame into a BGRA32 pixel buffer.
+    /// </summary>
     public static unsafe void Render(
         uint* buffer, int width, int height,
         string apiTitle, string gpuName, bool isBenchmarking, int durationSec,
@@ -82,13 +99,13 @@ public static class PixelUiEngine
         ThemePalette theme,
         int mouseX, int mouseY, float animTime)
     {
-        // 1. Процедурный фон с точной палитрой темы
+        // 1. Procedural background shader math with theme palette
         RenderGpuZBackground(buffer, width, height, isBenchmarking ? animTime : 0.0f, isBenchmarking, theme);
 
         uint accentColor = GetThemeAccent(theme);
         uint activeBtnBg = GetThemeActiveButtonBg(theme);
 
-        // 2. Верхняя стеклянная панель
+        // 2. Top header panel
         FillRectAlpha(buffer, width, 0, 0, width, 55, 0xDD0D1117);
         DrawLine(buffer, width, 0, 55, width, 55, 0xFF30363D);
         DrawString(buffer, width, 25, 12, $"GPU-T RENDER TEST  |  {apiTitle.ToUpperInvariant()}", 0xFFE6EDF3, 2);
@@ -96,7 +113,7 @@ public static class PixelUiEngine
         string cleanName = FormatGpuName(gpuName);
         DrawString(buffer, width, 25, 34, $"DEVICE: {cleanName}   •   STATUS: {(isBenchmarking ? "100% STRESS RUNNING" : "IDLE / STANDBY")}", isBenchmarking ? 0xFF3FB950 : accentColor, 1);
 
-        // 3. Кнопка START / STOP
+        // 3. Start / Stop button
         bool hoverStart = BtnStartStop.Contains(mouseX, mouseY);
         uint startBg = isBenchmarking
             ? (hoverStart ? 0xFFDA3633 : 0xFFA40E26)
@@ -105,17 +122,17 @@ public static class PixelUiEngine
 
         FillRectAlpha(buffer, width, BtnStartStop.X, BtnStartStop.Y, BtnStartStop.W, BtnStartStop.H, startBg);
         DrawRect(buffer, width, BtnStartStop.X, BtnStartStop.Y, BtnStartStop.W, BtnStartStop.H, startBorder);
-        string startLabel = isBenchmarking ? "⏹  STOP" : "▶  START";
+        string startLabel = isBenchmarking ? "STOP" : "START";
         DrawString(buffer, width, BtnStartStop.X + 35, BtnStartStop.Y + 12, startLabel, 0xFFFFFFFF, 1);
 
-        // Пресеты времени
+        // Duration presets
         bool isPreset = durationSec is 10 or 30 or 60 or 0 && !isCustomFocused;
         DrawPresetButton(buffer, width, Btn10s, "10S", durationSec == 10 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, Btn30s, "30S", durationSec == 30 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, Btn60s, "60S", durationSec == 60 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, BtnUnlimited, "UNLIMITED", durationSec == 0 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
 
-        // Поле ввода
+        // Custom duration input field
         bool isCustomActive = isCustomFocused || (!isPreset && durationSec > 0);
         uint inputBg = isCustomFocused ? 0xEE161B22 : (isCustomActive ? activeBtnBg : 0xAA21262D);
         uint inputBorder = isCustomFocused ? accentColor : (isCustomActive ? accentColor : 0xFF30363D);
@@ -130,7 +147,7 @@ public static class PixelUiEngine
         DrawPresetButton(buffer, width, BtnMinus, "-", false, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, BtnPlus, "+", false, mouseX, mouseY, accentColor, activeBtnBg);
 
-        // 4. Панель телеметрии
+        // 4. Telemetry and metrics HUD panel
         bool hasHwSensor = !string.IsNullOrEmpty(hwSensorStr);
         int hudH = hasHwSensor ? 115 : 95;
         int hudY = hasHwSensor ? 400 : 420;
@@ -162,6 +179,9 @@ public static class PixelUiEngine
         DrawString(buffer, width, 35, 525, "Click buttons to control benchmark. Press ESC or close window to exit.", 0xFF6E7681, 1);
     }
 
+    /// <summary>
+    /// Renders procedural wavy background animation with theme color mapping.
+    /// </summary>
     private static unsafe void RenderGpuZBackground(uint* buffer, int width, int height, float time, bool isStress, ThemePalette theme)
     {
         float invW = 1.0f / width;
@@ -188,14 +208,14 @@ public static class PixelUiEngine
                 {
                     switch (theme)
                     {
-                        // 1. VULKAN: Огненно-красный, пылающий оранжевый
+                        // 1. Vulkan: Fiery orange-red
                         case ThemePalette.Vulkan:
                             r = (byte)Math.Clamp((int)(200 + 55 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(40 + 110 * (MathF.Sin(time * 1.5f + nx * 2.0f) * 0.5f + 0.5f) * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(10 + 30 * (1.0f - norm)), 0, 255);
                             break;
 
-                        // 2. OPENGL & ZINK: Синий кобальт, неоновый циан
+                        // 2. OpenGL & Zink: Cobalt blue & neon cyan
                         case ThemePalette.OpenGL:
                         case ThemePalette.Dxvk:
                             r = (byte)Math.Clamp((int)(15 + 45 * (1.0f - norm)), 0, 255);
@@ -203,56 +223,56 @@ public static class PixelUiEngine
                             b = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
                             break;
 
-                        // 3. OPENGL ES & ZINK ES: Неоновая маджента, пурпурный, розовый
+                        // 3. OpenGL ES: Neon magenta & purple
                         case ThemePalette.OpenGLES:
                             r = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(20 + 55 * (MathF.Sin(time * 2.0f + ny) * 0.5f + 0.5f)), 0, 255);
                             b = (byte)Math.Clamp((int)(160 + 95 * (MathF.Cos(time * 1.5f - nx) * 0.5f + 0.5f)), 0, 255);
                             break;
 
-                        // 4. RUSTICL (Mesa Rust): Фирменный ржаво-медный, бронзовый и янтарь (Rust Orange)
+                        // 4. Mesa Rusticl: Rust copper & bronze
                         case ThemePalette.Rusticl:
                             r = (byte)Math.Clamp((int)(190 + 65 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(65 + 85 * (MathF.Sin(time * 1.6f + nx * 2.2f) * 0.5f + 0.5f)), 0, 255);
                             b = (byte)Math.Clamp((int)(15 + 35 * (1.0f - norm)), 0, 255);
                             break;
 
-                        // 5. OPENCL: Чистая морская волна (Teal), аквамарин и холодный изумруд
+                        // 5. OpenCL: Deep teal & emerald
                         case ThemePalette.OpenCL:
                             r = (byte)Math.Clamp((int)(15 + 50 * (1.0f - norm)), 0, 255);
                             g = (byte)Math.Clamp((int)(150 + 105 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(140 + 115 * (MathF.Sin(time * 1.4f + ny * 1.8f) * 0.5f + 0.5f)), 0, 255);
                             break;
 
-                        // 6. CUDA: Лаймово-зеленый NVIDIA
+                        // 6. CUDA: NVIDIA lime green
                         case ThemePalette.Cuda:
                             r = (byte)Math.Clamp((int)(10 + 40 * (1.0f - norm)), 0, 255);
                             g = (byte)Math.Clamp((int)(160 + 95 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(20 + 50 * norm), 0, 255);
                             break;
 
-                        // 7. ROCm: Рубиновый красный AMD
+                        // 7. ROCm: AMD ruby red
                         case ThemePalette.Rocm:
                             r = (byte)Math.Clamp((int)(210 + 45 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(15 + 35 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(25 + 45 * norm), 0, 255);
                             break;
 
-                        // 8. OneAPI: Электрический голубой Intel
+                        // 8. oneAPI: Intel electric cyan
                         case ThemePalette.OneApi:
                             r = (byte)Math.Clamp((int)(10 + 40 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(120 + 115 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(210 + 45 * norm), 0, 255);
                             break;
 
-                        // 9. VKD3D: Сиреневый и стальной Valve
+                        // 9. VKD3D: Valve purple & steel
                         case ThemePalette.Vkd3d:
                             r = (byte)Math.Clamp((int)(140 + 80 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(80 + 70 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(150 + 90 * norm), 0, 255);
                             break;
 
-                        // 10. WineD3D: Винный каберне
+                        // 10. WineD3D: Cabernet wine red
                         case ThemePalette.WineD3d:
                             r = (byte)Math.Clamp((int)(170 + 75 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(15 + 30 * (1.0f - norm)), 0, 255);
@@ -262,7 +282,7 @@ public static class PixelUiEngine
                 }
                 else
                 {
-                    // Фоновый градиент в режиме ожидания (Idle)
+                    // Idle background gradient
                     float baseGrad = (ny * 0.5f + 0.5f);
                     switch (theme)
                     {
@@ -285,7 +305,7 @@ public static class PixelUiEngine
                         case ThemePalette.WineD3d:
                             r = (byte)(30 + 22 * baseGrad); g = (byte)(12 + 10 * baseGrad); b = (byte)(16 + 12 * baseGrad);
                             break;
-                        default: // OpenGL / Intel / Zink (Тёмно-синий)
+                        default:
                             r = (byte)(12 + 10 * baseGrad); g = (byte)(16 + 18 * baseGrad); b = (byte)(26 + 32 * baseGrad);
                             break;
                     }
@@ -296,20 +316,26 @@ public static class PixelUiEngine
         }
     }
 
+    /// <summary>
+    /// Retrieves the accent color for a specific theme.
+    /// </summary>
     private static uint GetThemeAccent(ThemePalette theme) => theme switch
     {
-        ThemePalette.Vulkan   => 0xFFFF5722, // Огненно-оранжевый (Vulkan)
-        ThemePalette.OpenGLES => 0xFFFF4081, // Неоново-розовый (OpenGL ES)
-        ThemePalette.Rusticl  => 0xFFFF7043, // Медно-ржавый оранжевый (Rusticl)
-        ThemePalette.OpenCL   => 0xFF2DD4BF, // Аквамарин / Teal (OpenCL)
-        ThemePalette.Cuda     => 0xFF00E676, // Лаймово-зеленый (NVIDIA)
-        ThemePalette.Rocm     => 0xFFFF1744, // Красный (AMD)
-        ThemePalette.OneApi   => 0xFF00B0FF, // Голубой (Intel)
-        ThemePalette.Vkd3d    => 0xFFE040FB, // Сиреневый (Valve)
-        ThemePalette.WineD3d  => 0xFFFF5252, // Винный (Wine)
-        _                     => 0xFF2979FF  // Кобальтово-синий (OpenGL)
+        ThemePalette.Vulkan   => 0xFFFF5722,
+        ThemePalette.OpenGLES => 0xFFFF4081,
+        ThemePalette.Rusticl  => 0xFFFF7043,
+        ThemePalette.OpenCL   => 0xFF2DD4BF,
+        ThemePalette.Cuda     => 0xFF00E676,
+        ThemePalette.Rocm     => 0xFFFF1744,
+        ThemePalette.OneApi   => 0xFF00B0FF,
+        ThemePalette.Vkd3d    => 0xFFE040FB,
+        ThemePalette.WineD3d  => 0xFFFF5252,
+        _                     => 0xFF2979FF
     };
 
+    /// <summary>
+    /// Retrieves the active button background color for a specific theme.
+    /// </summary>
     private static uint GetThemeActiveButtonBg(ThemePalette theme) => theme switch
     {
         ThemePalette.Vulkan   => 0xEEB7300D,

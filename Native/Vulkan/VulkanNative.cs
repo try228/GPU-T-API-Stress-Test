@@ -1,8 +1,10 @@
 using System.Runtime.InteropServices;
 
-namespace GpuT.Agent.Native.Vulkan;
+namespace GPU_T.StressTest.Native.Vulkan;
 
-// ОБЯЗАТЕЛЬНО: partial class для работы генератора [LibraryImport]
+/// <summary>
+/// Direct P/Invoke bindings for Vulkan instance and device management (libvulkan.so.1).
+/// </summary>
 public static unsafe partial class VulkanNative
 {
     private const string VulkanLib = "libvulkan.so.1";
@@ -25,11 +27,12 @@ public static unsafe partial class VulkanNative
     [LibraryImport(VulkanLib, EntryPoint = "vkDestroyDevice")]
     public static partial void vkDestroyDevice(nint device, nint pAllocator);
 
-    // Делегаты функций расширения VK_KHR_performance_query
+    // Extension delegates for VK_KHR_performance_query
     public delegate int PFN_vkAcquireProfilingLockKHR(nint device, VkAcquireProfilingLockInfoKHR* pInfo);
     public delegate void PFN_vkReleaseProfilingLockKHR(nint device);
 }
 
+/// <summary>Vulkan instance creation descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct VkInstanceCreateInfo
 {
@@ -43,6 +46,7 @@ public unsafe struct VkInstanceCreateInfo
     public byte** ppEnabledExtensionNames;
 }
 
+/// <summary>Vulkan logical device creation descriptor.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct VkDeviceCreateInfo
 {
@@ -58,10 +62,11 @@ public unsafe struct VkDeviceCreateInfo
     public void* pEnabledFeatures;
 }
 
+/// <summary>Profiling lock parameters for VK_KHR_performance_query.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct VkAcquireProfilingLockInfoKHR
 {
-    public int sType; // 1000116003 = VK_STRUCTURE_TYPE_ACQUIRE_PROFILING_LOCK_INFO_KHR
+    public int sType;
     public void* pNext;
     public uint flags;
     public ulong timeout;

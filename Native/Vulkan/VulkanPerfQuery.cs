@@ -2,8 +2,11 @@ using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 
-namespace GpuT.Agent.Native.Vulkan;
+namespace GPU_T.StressTest.Native.Vulkan;
 
+/// <summary>
+/// Manages hardware performance queries and profiling locks via the VK_KHR_performance_query extension.
+/// </summary>
 public sealed unsafe class VulkanPerfQueryManager : IDisposable
 {
     public delegate Result PfnEnumerateCounters(
@@ -40,13 +43,32 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
 
     private double _smoothedValue = 0.0;
 
-    public bool IsSupported => _deviceExtensionActive && _pfnEnumerate != null;
+    /// <summary>Indicates whether VK_KHR_performance_query is supported on this GPU.</summary>
+    public bool IsSupported => _deviceExtensionActive && _pfnEnumerate != null && _queryPool.Handle != 0;
+
+    /// <summary>Indicates whether the hardware query pool was allocated successfully.</summary>
     public bool IsQueryPoolReady => _queryPool.Handle != 0;
+
+    /// <summary>Handle to the underlying Vulkan query pool.</summary>
     public QueryPool QueryPoolHandle => _queryPool;
+
+    /// <summary>Display name of the active silicon hardware counter.</summary>
     public string SelectedCounterName { get; private set; } = "None";
+
+    /// <summary>Formatted output string representing the current live hardware reading.</summary>
     public string FormattedCounterValue { get; private set; } = "N/A (Pipeline Math Fallback)";
 
-    public VulkanPerfQueryManager(Vk vk, Instance instance, Device device, PhysicalDevice physicalDevice, uint queueFamilyIndex, uint querySlotsCount, bool deviceExtensionActive)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="VulkanPerfQueryManager"/> class.
+    /// </summary>
+    public VulkanPerfQueryManager(
+        Vk vk,
+        Instance instance,
+        Device device,
+        PhysicalDevice physicalDevice,
+        uint queueFamilyIndex,
+        uint querySlotsCount,
+        bool deviceExtensionActive)
     {
         _vk = vk;
         _instance = instance;
@@ -61,7 +83,6 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
 
     private void Initialize()
     {
-        // Если устройство не поддерживает расширение (iGPU), сразу выходим в безопасный fallback
         if (!_deviceExtensionActive)
         {
             FormattedCounterValue = "N/A (Pipeline Math Fallback)";
@@ -145,10 +166,9 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
                 FormattedCounterValue = "N/A (Pipeline Math Fallback)";
             }
         }
-        catch (Exception ex)
+        catch
         {
             FormattedCounterValue = "N/A (Pipeline Math Fallback)";
-            Console.WriteLine($"[PerfQuery] iGPU Notice: {ex.Message}");
         }
     }
 
@@ -160,9 +180,11 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         return fnPtr;
     }
 
+    /// <summary>
+    /// Acquires the profiling lock to fix GPU clock frequencies.
+    /// </summary>
     public void AcquireLock()
     {
-        // Защита: не вызываем блокировку, если QueryPool не активен (iGPU)
         if (!IsQueryPoolReady || _pfnAcquireLock == null || _lockAcquired) return;
         try
         {
@@ -180,6 +202,9 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         catch { }
     }
 
+    /// <summary>
+    /// Releases the profiling lock to return GPU to idle power state.
+    /// </summary>
     public void ReleaseLock()
     {
         if (!IsQueryPoolReady || _pfnReleaseLock == null || !_lockAcquired) return;
@@ -192,6 +217,10 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         catch { }
     }
 
+    /// <summary>
+    /// Fetches query results from the completed frame slot and applies EMA smoothing.
+    /// </summary>
+    /// <param name="slotIndex">Frame slot index.</param>
     public void FetchResults(uint slotIndex)
     {
         if (!IsQueryPoolReady) return;
@@ -238,6 +267,9 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Releases unmanaged resources and destroys the query pool.
+    /// </summary>
     public void Dispose()
     {
         ReleaseLock();

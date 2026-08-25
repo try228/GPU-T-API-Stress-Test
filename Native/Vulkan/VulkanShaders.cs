@@ -1,9 +1,14 @@
-namespace GpuT.Agent.Native.Vulkan;
+namespace GPU_T.StressTest.Native.Vulkan;
 
+/// <summary>
+/// Pre-compiled SPIR-V compute shader binaries for Vulkan stress testing.
+/// </summary>
 public static class VulkanShaders
 {
-    // Валидный SPIR-V 1.0 Compute Shader (LocalSize: 64x1x1, SSBO Binding 0)
-    // Проверен через Khronos spirv-val
+    /// <summary>
+    /// Valid SPIR-V 1.0 Compute Shader (LocalSize: 64x1x1, SSBO Binding 0).
+    /// Verified with Khronos spirv-val.
+    /// </summary>
     public static readonly uint[] StressComputeSpirV = new uint[]
     {
         0x07230203, 0x00010000, 0x00080001, 0x00000019, 0x00000000,
@@ -12,7 +17,7 @@ public static class VulkanShaders
         0x0006000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, // OpEntryPoint GLCompute %4 "main" %9
         0x00060010, 0x00000004, 0x00000011, 0x00000040, 0x00000001, 0x00000001, // OpExecutionMode %4 LocalSize 64 1 1
         0x00040047, 0x00000009, 0x0000000b, 0x0000001c, // OpDecorate %9 BuiltIn GlobalInvocationId
-        0x00040047, 0x0000000b, 0x00000006, 0x00000004, // OpDecorate %11 ArrayStride 4 (ТЕПЕРЬ НА OpTypeRuntimeArray!)
+        0x00040047, 0x0000000b, 0x00000006, 0x00000004, // OpDecorate %11 ArrayStride 4
         0x00050048, 0x0000000c, 0x00000000, 0x00000023, 0x00000000, // OpMemberDecorate %12 0 Offset 0
         0x00030047, 0x0000000c, 0x00000003, // OpDecorate %12 BufferBlock
         0x00040047, 0x0000000e, 0x00000022, 0x00000000, // OpDecorate %14 DescriptorSet 0
@@ -23,7 +28,7 @@ public static class VulkanShaders
         0x00040017, 0x00000007, 0x00000006, 0x00000003, // %7 = OpTypeVector %6 3
         0x00040020, 0x00000008, 0x00000001, 0x00000007, // %8 = OpTypePointer Input %7
         0x0004003b, 0x00000008, 0x00000009, 0x00000001, // %9 = OpVariable %8 Input (gl_GlobalInvocationID)
-        0x0003001d, 0x0000000b, 0x00000006, // %11 = OpTypeRuntimeArray %6 (ИСПРАВЛЕНО 0x1D)
+        0x0003001d, 0x0000000b, 0x00000006, // %11 = OpTypeRuntimeArray %6
         0x0003001e, 0x0000000c, 0x0000000b, // %12 = OpTypeStruct %11
         0x00040020, 0x0000000d, 0x00000002, 0x0000000c, // %13 = OpTypePointer Uniform %12
         0x0004003b, 0x0000000d, 0x0000000e, 0x00000002, // %14 = OpVariable %13 Uniform
