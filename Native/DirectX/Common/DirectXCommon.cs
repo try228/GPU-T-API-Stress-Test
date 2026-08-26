@@ -123,7 +123,6 @@ public static class DirectXRunner
             case D3DTranslationLayer.Dxvk:
                 psi.Environment["WINEDLLOVERRIDES"] = "d3d11,dxgi,d3d9=n,b";
                 psi.Environment["PROTON_USE_WINED3D"] = "0";
-                // Компактный HUD в верхнем левом углу, не перекрывающий интерфейс
                 psi.Environment["DXVK_HUD"] = "fps,gpuload,version";
                 if (targetGpu != null)
                 {

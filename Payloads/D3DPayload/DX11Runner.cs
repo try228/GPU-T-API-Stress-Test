@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 
 namespace GPU_T.StressTest.Payloads.D3D;
 
+/// <summary>
+/// Direct3D 11 hardware rendering and pipeline stress engine.
+/// </summary>
 public static unsafe partial class DX11Runner
 {
     private const string D3D11Lib = "d3d11.dll";
@@ -223,7 +226,7 @@ public static unsafe partial class DX11Runner
                     }
                     unmap(context, stagingTexture, 0);
 
-                    // 512 проходов копирования текстуры для 100% загрузки конвейера и шины VRAM
+                    // 512 texture copy passes per frame for 100% pipeline and VRAM bandwidth saturation
                     int passes = isBenchmarking ? 512 : 1;
                     for (int p = 0; p < passes; p++)
                     {

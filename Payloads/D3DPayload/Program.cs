@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace GPU_T.StressTest.Payloads.D3D;
@@ -10,7 +9,7 @@ public static unsafe partial class Program
 
     public static int Main(string[] args)
     {
-        // 1. Ловим вообще любые падения процесса (включая неуправляемые)
+        // 1. Trap all unhandled process exceptions (including unmanaged crashes)
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
         {
             string crashMsg = $"[FATAL UNHANDLED] {e.ExceptionObject}";
@@ -83,7 +82,7 @@ public static unsafe partial class Program
         }
         catch { }
 
-        // Показываем окно поверх всех окон, чтобы его нельзя было не заметить
+        // Display topmost message box for immediate visual diagnostic
         MessageBox(nint.Zero, message, "Direct3D Payload Exception", 0x00000010 /* MB_ICONERROR */ | 0x00040000 /* MB_TOPMOST */);
     }
 }

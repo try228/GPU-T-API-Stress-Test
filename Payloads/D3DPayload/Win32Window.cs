@@ -50,9 +50,8 @@ public static unsafe partial class Win32Window
         public int ptY;
     }
 
-    // --- Win32 Imports ---
+    // --- Native Win32 API imports ---
 
-    // ИСПРАВЛЕНО: GetModuleHandleW находится в kernel32.dll
     [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW")]
     public static partial nint GetModuleHandleW(void* lpModuleName);
 

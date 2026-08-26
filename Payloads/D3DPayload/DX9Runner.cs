@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 
 namespace GPU_T.StressTest.Payloads.D3D;
 
+/// <summary>
+/// Direct3D 9 hardware rendering and stress engine (Zero external DLL dependencies).
+/// </summary>
 public static unsafe partial class DX9Runner
 {
     private const string D3D9Lib = "d3d9.dll";
@@ -71,7 +74,7 @@ public static unsafe partial class DX9Runner
             BackBufferFormat = D3DFMT_A8R8G8B8,
             BackBufferCount = 1,
             Windowed = 1,
-            SwapEffect = 1,
+            SwapEffect = 1, // D3DSWAPEFFECT_DISCARD
             hDeviceWindow = hwnd,
             PresentationInterval = 0x80000000 // VSync OFF
         };
@@ -81,10 +84,11 @@ public static unsafe partial class DX9Runner
             (delegate* unmanaged[Stdcall]<nint, uint, int, nint, uint, D3DPRESENT_PARAMETERS*, nint*, int>)vtbl[16];
 
         nint device = nint.Zero;
+        // Attempt hardware vertex processing, fallback to software if unsupported
         int res = createDevice(d3d9, 0, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &d3dpp, &device);
         if (res != 0)
         {
-            res = createDevice(d3d9, 0, D3DDEVTYPE_HAL, hwnd, 0x00000020, &d3dpp, &device);
+            res = createDevice(d3d9, 0, D3DDEVTYPE_HAL, hwnd, 0x00000020 /* SOFTWARE */, &d3dpp, &device);
         }
         if (res != 0 || device == nint.Zero)
             throw new InvalidOperationException($"D3D9 CreateDevice failed with HRESULT: 0x{res:X8}");
@@ -199,7 +203,7 @@ public static unsafe partial class DX9Runner
             double elapsed = isBenchmarking ? benchTimer.Elapsed.TotalSeconds : 0.0;
             double tflops = isBenchmarking ? (currentFps * 1.52) / 1000.0 : 0.0;
 
-            // 2048 полноэкранных бленд-проходов за кадр = 100% GPU Fillrate
+            // 2048 fullscreen alpha-blended passes per frame for 100% GPU fillrate saturation
             if (isBenchmarking)
             {
                 beginScene(device);

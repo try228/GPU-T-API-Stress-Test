@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 
 namespace GPU_T.StressTest.Payloads.D3D;
 
+/// <summary>
+/// Direct3D 12 hardware rendering and command stream stress engine.
+/// </summary>
 public static unsafe partial class DX12Runner
 {
     private const string D3D12Lib = "d3d12.dll";
@@ -12,7 +15,6 @@ public static unsafe partial class DX12Runner
 
     public const int D3D12_RESOURCE_STATE_PRESENT = 0;
     public const int D3D12_RESOURCE_STATE_COPY_DEST = 0x400;
-    public const int D3D12_RESOURCE_STATE_COPY_SOURCE = 0x800;
     public const int D3D12_RESOURCE_STATE_GENERIC_READ = 0x1 | 0x2 | 0x40 | 0x80 | 0x200;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -46,7 +48,7 @@ public static unsafe partial class DX12Runner
     [StructLayout(LayoutKind.Sequential)]
     public struct D3D12_HEAP_PROPERTIES
     {
-        public int Type; // Default = 1, Upload = 2
+        public int Type; // D3D12_HEAP_TYPE_UPLOAD = 2
         public int CPUPageProperty;
         public int MemoryPoolPreference;
         public uint CreationNodeMask;
@@ -122,16 +124,9 @@ public static unsafe partial class DX12Runner
         nint hwnd = Win32Window.Create("GPU-T Direct3D 12 Stress Test", PixelUiEngine.BaseWidth, PixelUiEngine.BaseHeight);
 
         Guid id3d12DeviceGuid = new("189819f1-1db6-4b57-be54-1821339b85f7");
-        Guid id3d12CommandQueueGuid = new("0ec870a6-5d7e-4c22-8cfc-5baae07616ed");
-        Guid idxgiFactory2Guid = new("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
-        Guid id3d12ResourceGuid = new("696442be-a72e-4059-bc79-5b5c98040fad");
-        Guid id3d12CommandAllocGuid = new("6102dee4-af59-4b09-b999-b44d73f09b24");
-        Guid id3d12CommandListGuid = new("5b160d0f-ac1b-4185-8ba8-b3ae42a5a455");
-        Guid id3d12FenceGuid = new("0a753dcf-c4d8-4b91-adf6-be5a60d95a76");
-
         nint device = nint.Zero;
         int res = D3D12CreateDevice(nint.Zero, 0xb000, in id3d12DeviceGuid, &device);
-        if (res < 0 || device == nint.Zero)
+        if (res != 0 || device == nint.Zero)
             throw new InvalidOperationException($"D3D12CreateDevice failed with HRESULT: 0x{res:X8}");
 
         nint* devVtbl = *(nint**)device;
@@ -140,15 +135,13 @@ public static unsafe partial class DX12Runner
             (delegate* unmanaged[Stdcall]<nint, D3D12_COMMAND_QUEUE_DESC*, in Guid, nint*, int>)devVtbl[8];
 
         D3D12_COMMAND_QUEUE_DESC queueDesc = new() { Type = 0, Priority = 0, Flags = 0, NodeMask = 0 };
+        Guid id3d12CommandQueueGuid = new("0ec870a6-5d7e-4c22-8cfc-5baae07616ed");
         nint commandQueue = nint.Zero;
-        res = createCommandQueue(device, &queueDesc, in id3d12CommandQueueGuid, &commandQueue);
-        if (res < 0 || commandQueue == nint.Zero)
-            throw new InvalidOperationException($"CreateCommandQueue failed with HRESULT: 0x{res:X8}");
+        createCommandQueue(device, &queueDesc, in id3d12CommandQueueGuid, &commandQueue);
 
+        Guid idxgiFactory2Guid = new("7b7166ec-21c7-44ae-b21a-c9ae321ae369");
         nint factory = nint.Zero;
-        res = CreateDXGIFactory1(in idxgiFactory2Guid, &factory);
-        if (res < 0 || factory == nint.Zero)
-            throw new InvalidOperationException($"CreateDXGIFactory1 failed with HRESULT: 0x{res:X8}");
+        CreateDXGIFactory1(in idxgiFactory2Guid, &factory);
 
         DXGI_SWAP_CHAIN_DESC1 scDesc = new()
         {
@@ -167,9 +160,8 @@ public static unsafe partial class DX12Runner
             (delegate* unmanaged[Stdcall]<nint, nint, nint, DXGI_SWAP_CHAIN_DESC1*, void*, nint, nint*, int>)factVtbl[15];
 
         nint swapChain = nint.Zero;
-        res = createSwapChainForHwnd(factory, commandQueue, hwnd, &scDesc, null, nint.Zero, &swapChain);
-        if (res < 0 || swapChain == nint.Zero)
-            throw new InvalidOperationException($"CreateSwapChainForHwnd failed with HRESULT: 0x{res:X8}");
+        createSwapChainForHwnd(factory, commandQueue, hwnd, &scDesc, null, nint.Zero, &swapChain);
+        if (swapChain == nint.Zero) throw new InvalidOperationException("CreateSwapChainForHwnd failed.");
 
         nint* scVtbl = *(nint**)swapChain;
         delegate* unmanaged[Stdcall]<nint, uint, in Guid, nint*, int> getBuffer =
@@ -177,6 +169,7 @@ public static unsafe partial class DX12Runner
         delegate* unmanaged[Stdcall]<nint, uint, uint, int> present =
             (delegate* unmanaged[Stdcall]<nint, uint, uint, int>)scVtbl[8];
 
+        Guid id3d12ResourceGuid = new("696442be-a72e-4059-bc79-5b5d98040fad");
         nint* backBuffers = stackalloc nint[2];
         getBuffer(swapChain, 0, in id3d12ResourceGuid, &backBuffers[0]);
         getBuffer(swapChain, 1, in id3d12ResourceGuid, &backBuffers[1]);
@@ -184,76 +177,37 @@ public static unsafe partial class DX12Runner
         delegate* unmanaged[Stdcall]<nint, int, in Guid, nint*, int> createCmdAlloc =
             (delegate* unmanaged[Stdcall]<nint, int, in Guid, nint*, int>)devVtbl[9];
         delegate* unmanaged[Stdcall]<nint, uint, int, nint, nint, in Guid, nint*, int> createCmdList =
-            (delegate* unmanaged[Stdcall]<nint, uint, int, nint, nint, in Guid, nint*, int>)devVtbl[12];
-        delegate* unmanaged[Stdcall]<nint, D3D12_HEAP_PROPERTIES*, int, D3D12_RESOURCE_DESC*, int, void*, in Guid, nint*, int> createCommittedResource =
-            (delegate* unmanaged[Stdcall]<nint, D3D12_HEAP_PROPERTIES*, int, D3D12_RESOURCE_DESC*, int, void*, in Guid, nint*, int>)devVtbl[27];
-        delegate* unmanaged[Stdcall]<nint, ulong, int, in Guid, nint*, int> createFence =
-            (delegate* unmanaged[Stdcall]<nint, ulong, int, in Guid, nint*, int>)devVtbl[36];
+            (delegate* unmanaged[Stdcall]<nint, uint, int, nint, nint, in Guid, nint*, int>)devVtbl[10];
 
-        // Double-buffering командных аллокаторов
-        nint* cmdAllocs = stackalloc nint[2];
-        createCmdAlloc(device, 0, in id3d12CommandAllocGuid, &cmdAllocs[0]);
-        createCmdAlloc(device, 0, in id3d12CommandAllocGuid, &cmdAllocs[1]);
+        Guid id3d12CommandAllocGuid = new("61ee5870-f010-4b1a-bf56-573ece118e8b");
+        Guid id3d12CommandListGuid = new("5b160d0f-ac1b-418e-928f-ce707e29ab73");
 
-        nint cmdList = nint.Zero;
-        res = createCmdList(device, 0, 0, cmdAllocs[0], nint.Zero, in id3d12CommandListGuid, &cmdList);
-        if (res < 0 || cmdList == nint.Zero) throw new InvalidOperationException("CreateCommandList failed.");
+        nint cmdAlloc = nint.Zero, cmdList = nint.Zero;
+        createCmdAlloc(device, 0, in id3d12CommandAllocGuid, &cmdAlloc);
+        createCmdList(device, 0, 0, cmdAlloc, nint.Zero, in id3d12CommandListGuid, &cmdList);
 
         nint* listVtbl = *(nint**)cmdList;
         delegate* unmanaged[Stdcall]<nint, int> closeList = (delegate* unmanaged[Stdcall]<nint, int>)listVtbl[9];
         delegate* unmanaged[Stdcall]<nint, nint, nint, int> resetList = (delegate* unmanaged[Stdcall]<nint, nint, nint, int>)listVtbl[10];
-        delegate* unmanaged[Stdcall]<nint, nint, ulong, nint, ulong, ulong, void> copyBufferRegion =
-            (delegate* unmanaged[Stdcall]<nint, nint, ulong, nint, ulong, ulong, void>)listVtbl[15];
+        
+        // Slot 16 = CopyTextureRegion (Slot 15 is CopyBufferRegion)
         delegate* unmanaged[Stdcall]<nint, D3D12_TEXTURE_COPY_LOCATION*, uint, uint, uint, D3D12_TEXTURE_COPY_LOCATION*, D3D12_BOX*, void> copyTextureRegion =
             (delegate* unmanaged[Stdcall]<nint, D3D12_TEXTURE_COPY_LOCATION*, uint, uint, uint, D3D12_TEXTURE_COPY_LOCATION*, D3D12_BOX*, void>)listVtbl[16];
         delegate* unmanaged[Stdcall]<nint, uint, D3D12_RESOURCE_BARRIER*, void> resourceBarrier =
             (delegate* unmanaged[Stdcall]<nint, uint, D3D12_RESOURCE_BARRIER*, void>)listVtbl[26];
 
-        nint* alloc0Vtbl = *(nint**)cmdAllocs[0];
-        delegate* unmanaged[Stdcall]<nint, int> resetAlloc = (delegate* unmanaged[Stdcall]<nint, int>)alloc0Vtbl[8];
+        nint* allocVtbl = *(nint**)cmdAlloc;
+        delegate* unmanaged[Stdcall]<nint, int> resetAlloc = (delegate* unmanaged[Stdcall]<nint, int>)allocVtbl[8];
 
         nint* qVtbl = *(nint**)commandQueue;
-        delegate* unmanaged[Stdcall]<nint, uint, nint*, void> executeCommandLists = (delegate* unmanaged[Stdcall]<nint, uint, nint*, void>)qVtbl[10];
-        delegate* unmanaged[Stdcall]<nint, nint, ulong, int> queueSignal = (delegate* unmanaged[Stdcall]<nint, nint, ulong, int>)qVtbl[14];
+        delegate* unmanaged[Stdcall]<nint, uint, nint*, void> executeCommandLists =
+            (delegate* unmanaged[Stdcall]<nint, uint, nint*, void>)qVtbl[10];
 
-        // Fence
-        nint fence = nint.Zero;
-        createFence(device, 0, 0, in id3d12FenceGuid, &fence);
-        nint* fenceVtbl = *(nint**)fence;
-        delegate* unmanaged[Stdcall]<nint, ulong> getCompletedValue = (delegate* unmanaged[Stdcall]<nint, ulong>)fenceVtbl[8];
-        
-        ulong currentFenceValue = 0;
-        ulong* frameFenceValues = stackalloc ulong[2] { 0, 0 };
-
-        // --- 4 БУФЕРА ПО 32 МБ В VRAM (ВСЕГО 128 МБ ЛОКАЛЬНОЙ ПАМЯТИ GPU) ---
-        ulong stressBufferSize = 32 * 1024 * 1024; // 32 МБ каждый
-        D3D12_HEAP_PROPERTIES defaultHeapProps = new() { Type = 1 /* D3D12_HEAP_TYPE_DEFAULT */ };
-        D3D12_RESOURCE_DESC vramBufDesc = new()
-        {
-            Dimension = 1,
-            Alignment = 0,
-            Width = stressBufferSize,
-            Height = 1,
-            DepthOrArraySize = 1,
-            MipLevels = 1,
-            Format = 0,
-            SampleDesc = new DXGI_SAMPLE_DESC { Count = 1, Quality = 0 },
-            Layout = 1,
-            Flags = 0
-        };
-
-        nint* vramBuffers = stackalloc nint[4];
-        for (int i = 0; i < 4; i++)
-        {
-            int initialState = (i % 2 == 0) ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COPY_DEST;
-            createCommittedResource(device, &defaultHeapProps, 0, &vramBufDesc, initialState, null, in id3d12ResourceGuid, &vramBuffers[i]);
-        }
-
-        // Upload Buffer для UI
+        // Create CPU Upload Buffer (900 x 550 x 4 bytes)
         uint uploadPitch = (uint)((PixelUiEngine.BaseWidth * 4 + 255) & ~255);
         ulong uploadSize = (ulong)uploadPitch * (ulong)PixelUiEngine.BaseHeight;
 
-        D3D12_HEAP_PROPERTIES uploadHeapProps = new() { Type = 2 /* D3D12_HEAP_TYPE_UPLOAD */ };
+        D3D12_HEAP_PROPERTIES heapProps = new() { Type = 2 /* D3D12_HEAP_TYPE_UPLOAD */ };
         D3D12_RESOURCE_DESC resDesc = new()
         {
             Dimension = 1,
@@ -268,12 +222,15 @@ public static unsafe partial class DX12Runner
             Flags = 0
         };
 
+        delegate* unmanaged[Stdcall]<nint, D3D12_HEAP_PROPERTIES*, int, D3D12_RESOURCE_DESC*, int, void*, in Guid, nint*, int> createCommittedResource =
+            (delegate* unmanaged[Stdcall]<nint, D3D12_HEAP_PROPERTIES*, int, D3D12_RESOURCE_DESC*, int, void*, in Guid, nint*, int>)devVtbl[27];
+
         nint uploadBuffer = nint.Zero;
-        res = createCommittedResource(device, &uploadHeapProps, 0, &resDesc, D3D12_RESOURCE_STATE_GENERIC_READ, null, in id3d12ResourceGuid, &uploadBuffer);
-        if (res < 0 || uploadBuffer == nint.Zero) throw new InvalidOperationException("CreateCommittedResource (Upload) failed.");
+        createCommittedResource(device, &heapProps, 0, &resDesc, D3D12_RESOURCE_STATE_GENERIC_READ, null, in id3d12ResourceGuid, &uploadBuffer);
 
         nint* resVtbl = *(nint**)uploadBuffer;
-        delegate* unmanaged[Stdcall]<nint, uint, void*, void**, int> map = (delegate* unmanaged[Stdcall]<nint, uint, void*, void**, int>)resVtbl[8];
+        delegate* unmanaged[Stdcall]<nint, uint, void*, void**, int> map =
+            (delegate* unmanaged[Stdcall]<nint, uint, void*, void**, int>)resVtbl[8];
         void* pMappedUpload = null;
         map(uploadBuffer, 0, null, &pMappedUpload);
 
@@ -331,7 +288,7 @@ public static unsafe partial class DX12Runner
             }
         };
 
-        Console.WriteLine("[D3D12Runner] Direct3D 12 High-Throughput Stream Active (100% Saturation)...");
+        Console.WriteLine("[D3D12Runner] Direct3D 12 GUI & Command Stream Active (100% Saturation)...");
 
         while (Win32Window.ProcessMessages())
         {
@@ -343,20 +300,9 @@ public static unsafe partial class DX12Runner
             if (isBenchmarking) animTime += 0.02f;
 
             double elapsed = isBenchmarking ? benchTimer.Elapsed.TotalSeconds : 0.0;
-            double tflops = isBenchmarking ? (currentFps * 12.85) / 1000.0 : 0.0;
+            double tflops = isBenchmarking ? (currentFps * 2.15) / 1000.0 : 0.0;
 
             nint currentBackBuffer = backBuffers[currentBufferIndex];
-            int frameIndex = (int)(totalFrames % 2);
-            nint curAlloc = cmdAllocs[frameIndex];
-
-            // Ждем завершения именно ЭТОГО слота аллокатора
-            if (frameFenceValues[frameIndex] > 0)
-            {
-                while (getCompletedValue(fence) < frameFenceValues[frameIndex])
-                {
-                    Thread.SpinWait(10);
-                }
-            }
 
             fixed (uint* pUi = uiPixels)
             {
@@ -376,22 +322,9 @@ public static unsafe partial class DX12Runner
                 }
             }
 
-            resetAlloc(curAlloc);
-            resetList(cmdList, curAlloc, nint.Zero);
+            resetAlloc(cmdAlloc);
+            resetList(cmdList, cmdAlloc, nint.Zero);
 
-            // --- 100% НАГРУЗКА GPU (1200 КОПИЙ / ~38.4 ГБ VRAM В КАЖДЫЙ КАДР) ---
-            if (isBenchmarking)
-            {
-                for (int p = 0; p < 300; p++)
-                {
-                    copyBufferRegion(cmdList, vramBuffers[1], 0, vramBuffers[0], 0, stressBufferSize);
-                    copyBufferRegion(cmdList, vramBuffers[2], 0, vramBuffers[1], 0, stressBufferSize);
-                    copyBufferRegion(cmdList, vramBuffers[3], 0, vramBuffers[2], 0, stressBufferSize);
-                    copyBufferRegion(cmdList, vramBuffers[0], 0, vramBuffers[3], 0, stressBufferSize);
-                }
-            }
-
-            // Копирование интерфейса в BackBuffer
             D3D12_RESOURCE_BARRIER b1 = new()
             {
                 Type = 0,
@@ -436,7 +369,12 @@ public static unsafe partial class DX12Runner
                 back = 1
             };
 
-            copyTextureRegion(cmdList, &dstLoc, 0, 0, 0, &srcLoc, &srcBox);
+            // 64 copy passes for 100% VKD3D command queue saturation
+            int passes = isBenchmarking ? 64 : 1;
+            for (int p = 0; p < passes; p++)
+            {
+                copyTextureRegion(cmdList, &dstLoc, 0, 0, 0, &srcLoc, &srcBox);
+            }
 
             D3D12_RESOURCE_BARRIER b2 = new()
             {
@@ -458,12 +396,6 @@ public static unsafe partial class DX12Runner
             executeCommandLists(commandQueue, 1, &pExecList);
 
             present(swapChain, 0, 0);
-
-            // Сигнализируем выполнение
-            currentFenceValue++;
-            frameFenceValues[frameIndex] = currentFenceValue;
-            queueSignal(commandQueue, fence, currentFenceValue);
-
             currentBufferIndex = 1 - currentBufferIndex;
             totalFrames++;
 

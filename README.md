@@ -33,7 +33,7 @@ dotnet publish -c Release -r linux-x64
 
 | Option                    | Description                                                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `-b, --backend <api>`     | Target backend API. Default: `vk`.                                                                                   |
+| `-b, --backend <api>`     | Target backend API. Default: `gl`.                                                                                   |
 | `-g, --gpu <index\|name>` | Target GPU by numeric index, such as `0` or `1`, or by a name/vendor substring, such as `amd`, `intel`, or `nvidia`. |
 | `-d, --duration <sec>`    | Initial stress-test duration in seconds. Use `0` for unlimited duration.                                             |
 | `--list-gpus`             | Enumerate all detected GPU devices, including PCI IDs, and exit.                                                     |

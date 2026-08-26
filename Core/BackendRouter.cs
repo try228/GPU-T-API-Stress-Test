@@ -9,15 +9,18 @@ public static class BackendRouter
 {
     /// <summary>
     /// Parses a backend string representation into a strongly-typed enum.
+    /// Defaults to Desktop OpenGL (TargetBackend.Gl) if no backend is specified.
     /// </summary>
+    /// <param name="rawInput">The raw backend name from CLI or environment.</param>
+    /// <returns>Resolved TargetBackend enum.</returns>
     public static TargetBackend ParseBackend(string? rawInput)
     {
-        if (string.IsNullOrWhiteSpace(rawInput))
-            throw new ArgumentException("No backend specified! Use -b <backend> or set API_backend env var.");
+        // Default backend is Desktop OpenGL as requested by maintainer
+        if (string.IsNullOrWhiteSpace(rawInput)) return TargetBackend.Gl;
 
         string clean = rawInput.Trim().Trim('"', '\'', ' ').ToLowerInvariant();
 
-        // Normalize Cyrillic typos
+        // Normalize accidental Cyrillic keyboard input
         clean = clean.Replace('с', 'c')
                      .Replace('о', 'o')
                      .Replace('р', 'p')
@@ -27,9 +30,9 @@ public static class BackendRouter
 
         return clean switch
         {
-            "vk" or "vulkan" => TargetBackend.Vk,
             "gl" or "opengl" => TargetBackend.Gl,
             "gles" or "opengles" or "gles3" or "opengl-es" => TargetBackend.Gles,
+            "vk" or "vulkan" => TargetBackend.Vk,
             "zink" => TargetBackend.Zink,
             "zink_es" or "zink-es" or "zinkgles" or "zink_gles" => TargetBackend.ZinkEs,
             "cl" or "opencl" or "ocl" => TargetBackend.Cl,
@@ -37,7 +40,7 @@ public static class BackendRouter
             "cuda" or "nv" or "nvidia" => TargetBackend.Cuda,
             "rocm" or "hip" or "amd" => TargetBackend.Rocm,
             "oapi" or "oneapi" or "level0" or "levelzero" or "ze" or "intel" => TargetBackend.Oapi,
-            
+
             // Direct3D 9
             "dxvk_9" or "dxvk-9" or "dxvk9" or "dx9" or "d3d9" => TargetBackend.Dxvk9,
             "wd3d_9" or "wd3d-9" or "wined3d_9" or "wined3d-9" or "wined3d9" => TargetBackend.Wd3d9,
@@ -50,13 +53,14 @@ public static class BackendRouter
             "vkd3d" or "vkd3d_w" or "vkd3d-wine" => TargetBackend.Vkd3d,
             "vkd3d_p" or "vkd3d-proton" or "vkd3dp" or "dx12" or "d3d12" => TargetBackend.Vkd3dP,
 
-            _ => throw new ArgumentException($"Unknown backend identifier '{rawInput}'. Supported: vk, gl, gles, zink, cl, rusticl, cuda, rocm, oapi, dxvk_9, dxvk_11, wd3d_9, wd3d_11, vkd3d, vkd3d_p.")
+            _ => throw new ArgumentException($"Unknown backend identifier '{rawInput}'. Supported: gl, gles, vk, zink, zink_es, cl, mesa_cl, cuda, rocm, oapi, dxvk_9, dxvk_11, wd3d_9, wd3d_11, vkd3d, vkd3d_p.")
         };
     }
 
     /// <summary>
     /// Applies driver-level environment variables required by specific layers (e.g. Zink, Rusticl).
     /// </summary>
+    /// <param name="backend">Selected backend.</param>
     public static void ApplyEnvironmentOverrides(TargetBackend backend)
     {
         switch (backend)
