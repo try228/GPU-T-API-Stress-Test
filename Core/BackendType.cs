@@ -1,7 +1,7 @@
 namespace GPU_T.StressTest.Core;
 
 /// <summary>
-/// Supported graphics and compute backends for stress testing.
+/// Supported graphics, compute, and Direct3D translation backends.
 /// </summary>
 public enum TargetBackend
 {
@@ -21,9 +21,15 @@ public enum TargetBackend
     Rocm,
     Oapi,
 
-    // Windows D3D Compatibility Layers (Wine / Proton)
-    Dxvk,
+    // Direct3D 9
+    Dxvk9,
+    Wd3d9,
+
+    // Direct3D 11
+    Dxvk11,
+    Wd3d11,
+
+    // Direct3D 12
     Vkd3d,
-    Vkd3dP,
-    Wd3d
+    Vkd3dP
 }

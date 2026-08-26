@@ -74,22 +74,25 @@ public sealed unsafe class OneApiStressBenchmark
         nint* drivers = stackalloc nint[(int)driverCount];
         OneApiNative.zeDriverGet(&driverCount, drivers);
 
-        // Collect all available Level Zero devices
+        // Collect all available Level Zero devices (CA2014 fixed: buffer allocated outside loop)
         List<(nint Driver, nint Device, string Name, uint Clock, int Index)> deviceList = new();
+        nint* devsBuffer = stackalloc nint[64];
+
         for (int d = 0; d < driverCount; d++)
         {
             uint dCount = 0;
             OneApiNative.zeDeviceGet(drivers[d], &dCount, null);
             if (dCount == 0) continue;
 
-            nint* devs = stackalloc nint[(int)dCount];
-            OneApiNative.zeDeviceGet(drivers[d], &dCount, devs);
-            for (int i = 0; i < dCount; i++)
+            uint queryCount = Math.Min(dCount, 64u);
+            OneApiNative.zeDeviceGet(drivers[d], &queryCount, devsBuffer);
+
+            for (int i = 0; i < queryCount; i++)
             {
                 ZeDeviceProperties props = new() { stype = OneApiNative.ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES };
-                OneApiNative.zeDeviceGetProperties(devs[i], &props);
+                OneApiNative.zeDeviceGetProperties(devsBuffer[i], &props);
                 string name = Marshal.PtrToStringAnsi((nint)props.name) ?? $"Level Zero Device #{i}";
-                deviceList.Add((drivers[d], devs[i], name, props.coreClockRate, deviceList.Count));
+                deviceList.Add((drivers[d], devsBuffer[i], name, props.coreClockRate, deviceList.Count));
             }
         }
 
@@ -216,7 +219,7 @@ public sealed unsafe class OneApiStressBenchmark
         int closeRes = OneApiNative.zeCommandListClose(s_cmdList);
         if (closeRes != 0) throw new InvalidOperationException($"zeCommandListClose failed with code: {closeRes}");
 
-        // 5. Dedicated compute execution thread (runs 100% on target GPU)
+        // 5. Dedicated compute execution thread
         using var computeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCt);
         var computeThread = new Thread(() =>
         {
@@ -245,7 +248,7 @@ public sealed unsafe class OneApiStressBenchmark
 
         computeThread.Start();
 
-        // 6. UI window initialization (renders on default display context)
+        // 6. UI window initialization
         Console.WriteLine("[OneAPIEngine] Step 6/6: Initializing UI Window...");
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);

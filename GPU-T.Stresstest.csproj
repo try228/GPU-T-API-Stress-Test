@@ -12,7 +12,13 @@
     <AssemblyName>GPU-T.StressTest</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
     <StripSymbols>true</StripSymbols>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Payloads/**</DefaultItemExcludes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Payloads/**" />
+    <None Remove="Payloads/**" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Silk.NET.Core" Version="2.22.0" />

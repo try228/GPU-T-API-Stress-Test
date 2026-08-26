@@ -61,14 +61,16 @@ public sealed unsafe class RocmStressBenchmark
             RocmNative.hipModuleGetFunction(&kernel, module, pKName);
         }
 
+        // CA2014 fixed: buffer allocated outside loop
         float timeVal = 0f;
+        void** kernelArgs = stackalloc void*[2];
+
         while (!ct.IsCancellationRequested)
         {
             timeVal += 0.05f;
 
             nint bufPtr = dptr;
             float t = timeVal;
-            void** kernelArgs = stackalloc void*[2];
             kernelArgs[0] = &bufPtr;
             kernelArgs[1] = &t;
 
@@ -118,13 +120,14 @@ public sealed unsafe class RocmStressBenchmark
             throw new InvalidOperationException("No ROCm-capable compute devices detected by the HIP driver.");
         }
 
-        // Collect all available HIP devices
+        // Collect all available HIP devices (CA2014 fixed: buffer allocated outside loop)
         List<(int Ordinal, string Name)> hipDevices = new();
+        byte* pNameBuffer = stackalloc byte[256];
+
         for (int i = 0; i < devCount; i++)
         {
-            byte* pName = stackalloc byte[256];
-            RocmNative.hipDeviceGetName(pName, 256, i);
-            string name = Marshal.PtrToStringAnsi((nint)pName) ?? $"HIP Device #{i}";
+            RocmNative.hipDeviceGetName(pNameBuffer, 256, i);
+            string name = Marshal.PtrToStringAnsi((nint)pNameBuffer) ?? $"HIP Device #{i}";
             hipDevices.Add((i, name));
         }
 

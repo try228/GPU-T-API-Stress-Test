@@ -6,6 +6,10 @@ using GPU_T.StressTest.Native.Vulkan;
 using GPU_T.StressTest.Native.CUDA;
 using GPU_T.StressTest.Native.ROCm;
 using GPU_T.StressTest.Native.OneAPI;
+using GPU_T.StressTest.Native.DirectX.Common;
+using GPU_T.StressTest.Native.DirectX.DX9;
+using GPU_T.StressTest.Native.DirectX.DX11;
+using GPU_T.StressTest.Native.DirectX.DX12;
 using GPU_T.StressTest.Runtimes;
 using Silk.NET.Windowing.Glfw;
 using Silk.NET.Input.Glfw;
@@ -81,7 +85,7 @@ public static class Program
 
             using var lifecycle = new LifecycleManager(0);
 
-            // Direct execution dispatch with exact target GPU matching
+            // Direct execution dispatch
             switch (backend)
             {
                 case TargetBackend.Vk:
@@ -100,25 +104,37 @@ public static class Program
                     OpenClStressBenchmark.Run(lifecycle.Token, duration, isRusticl: backend == TargetBackend.MesaCl, gpuArg, selectedGpuIndex);
                     break;
                 case TargetBackend.Cuda:
-                    CudaStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex, targetGpu);
+                    CudaStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex);
                     break;
                 case TargetBackend.Rocm:
-                    RocmStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex, targetGpu);
+                    RocmStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex);
                     break;
                 case TargetBackend.Oapi:
-                    OneApiStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex, targetGpu);
+                    OneApiStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex);
                     break;
-                case TargetBackend.Dxvk:
+
+                // Direct3D 9
+                case TargetBackend.Dxvk9:
+                    Dx9StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Dxvk, targetGpu);
+                    break;
+                case TargetBackend.Wd3d9:
+                    Dx9StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.WineD3D, targetGpu);
+                    break;
+
+                // Direct3D 11
+                case TargetBackend.Dxvk11:
+                    Dx11StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Dxvk, targetGpu);
+                    break;
+                case TargetBackend.Wd3d11:
+                    Dx11StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.WineD3D, targetGpu);
+                    break;
+
+                // Direct3D 12
                 case TargetBackend.Vkd3d:
+                    Dx12StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Vkd3d, targetGpu);
+                    break;
                 case TargetBackend.Vkd3dP:
-                case TargetBackend.Wd3d:
-                    var runtimes = RuntimeScanner.DiscoverAll();
-                    var selected = BackendRouter.ResolveRuntime(backend, runtimes);
-                    if (selected != null)
-                    {
-                        string dummyPayload = Path.Combine(AppContext.BaseDirectory, "d3d_stress.exe");
-                        WindowsPayloadRunner.Launch(selected, dummyPayload, lifecycle.Token);
-                    }
+                    Dx12StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Vkd3dProton, targetGpu);
                     break;
             }
 
@@ -138,8 +154,8 @@ public static class Program
     {
         Console.WriteLine("Usage: GPU-T.StressTest [options]");
         Console.WriteLine("Options:");
-        Console.WriteLine("  -b, --backend <api>     Select backend: vk, gl, gles, zink, zink_es, cl, mesa_cl, cuda, rocm, oapi, dxvk, vkd3d, vkd3d_p, wd3d");
-        Console.WriteLine("  -g, --gpu <index|name>  Select target GPU device by numeric index (0, 1) or name substring (e.g. 'amd', 'intel', 'nvidia')");
+        Console.WriteLine("  -b, --backend <api>     Select backend: vk, gl, gles, zink, cl, mesa_cl, cuda, rocm, oapi, dxvk_9, dxvk_11, wd3d_9, wd3d_11, vkd3d, vkd3d_p");
+        Console.WriteLine("  -g, --gpu <index|name>  Select target GPU device by numeric index (0, 1) or name substring");
         Console.WriteLine("  -d, --duration <sec>    Initial test duration in seconds (0 = unlimited)");
         Console.WriteLine("      --list-gpus         Print list of all detected GPU devices and exit");
         Console.WriteLine("  -h, --help              Show this help information");

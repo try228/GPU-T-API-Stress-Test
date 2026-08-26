@@ -70,16 +70,17 @@ public sealed unsafe class CudaStressBenchmark
             throw new InvalidOperationException("No CUDA-capable devices detected by the driver or translation layer.");
         }
 
-        // Collect all available CUDA devices
+        // Collect all available CUDA devices (CA2014 fixed: buffer allocated outside loop)
         List<(int Ordinal, string Name)> cudaDevices = new();
+        byte* pDevNameBuffer = stackalloc byte[256];
+
         for (int i = 0; i < devCount; i++)
         {
             int h = 0;
             if (CudaNative.cuDeviceGet(&h, i) == CudaNative.CUDA_SUCCESS)
             {
-                byte* pName = stackalloc byte[256];
-                CudaNative.cuDeviceGetName(pName, 256, h);
-                string name = Marshal.PtrToStringAnsi((nint)pName) ?? $"CUDA Device #{i}";
+                CudaNative.cuDeviceGetName(pDevNameBuffer, 256, h);
+                string name = Marshal.PtrToStringAnsi((nint)pDevNameBuffer) ?? $"CUDA Device #{i}";
                 cudaDevices.Add((i, name));
             }
         }
@@ -130,11 +131,13 @@ public sealed unsafe class CudaStressBenchmark
             s_function = func;
         }
 
-        // 3. Dedicated compute thread (runs 100% on target CUDA GPU)
+        // 3. Dedicated compute thread (CA2014 fixed: kernelArgs allocated outside while loop)
         using var computeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCt);
         var computeThread = new Thread(() =>
         {
             float timeVal = 0f;
+            void** kernelArgs = stackalloc void*[2];
+
             while (!computeCts.Token.IsCancellationRequested)
             {
                 if (!s_isBenchmarking)
@@ -147,7 +150,6 @@ public sealed unsafe class CudaStressBenchmark
 
                 nint bufPtr = s_dBuffer;
                 float t = timeVal;
-                void** kernelArgs = stackalloc void*[2];
                 kernelArgs[0] = &bufPtr;
                 kernelArgs[1] = &t;
 
@@ -173,7 +175,7 @@ public sealed unsafe class CudaStressBenchmark
 
         computeThread.Start();
 
-        // 4. UI window (renders on default display context)
+        // 4. UI window
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
         winOptions.Title = "GPU-T Render Test & CUDA Driver Agent";

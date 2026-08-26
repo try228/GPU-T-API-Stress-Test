@@ -42,13 +42,8 @@ public sealed unsafe class OpenClStressBenchmark
     private static nint s_kernel = nint.Zero;
 
     /// <summary>
-    /// Executes the OpenCL or Rusticl stress benchmark and launches the OpenGL UI frontend.
+    /// Executes the OpenCL or Rusticl stress benchmark on the requested GPU device.
     /// </summary>
-    /// <param name="hostCt">Host cancellation token.</param>
-    /// <param name="initialDuration">Initial duration in seconds (0 = unlimited).</param>
-    /// <param name="isRusticl">True if targeting Mesa Rusticl explicitly.</param>
-    /// <param name="gpuArg">GPU filter string or numeric index.</param>
-    /// <param name="fallbackIndex">Default numeric index.</param>
     public static void Run(CancellationToken hostCt, int initialDuration = 0, bool isRusticl = false, string? gpuArg = null, int fallbackIndex = 0)
     {
         GlfwWindowing.RegisterPlatform();
@@ -381,6 +376,7 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         OpenClNative.clGetPlatformIDs(numPlatforms, platforms, null);
 
         List<(nint Platform, nint Device, string DevName, string PlatformName)> deviceList = new();
+        nint* devicesBuffer = stackalloc nint[64]; // CA2014 fixed: allocated outside loop
 
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine($"[OpenCL Discovery] Found {numPlatforms} platform(s):");
@@ -397,14 +393,14 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
             int dRes = OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, 0, null, &devCount);
             if (dRes != OpenClNative.CL_SUCCESS || devCount == 0) continue;
 
-            nint* devices = stackalloc nint[(int)devCount];
-            OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, devCount, devices, null);
+            uint queryCount = Math.Min(devCount, 64u);
+            OpenClNative.clGetDeviceIDs(platforms[i], OpenClNative.CL_DEVICE_TYPE_ALL, queryCount, devicesBuffer, null);
 
-            for (uint d = 0; d < devCount; d++)
+            for (uint d = 0; d < queryCount; d++)
             {
-                string dName = GetClDeviceInfo(devices[d], OpenClNative.CL_DEVICE_NAME);
+                string dName = GetClDeviceInfo(devicesBuffer[d], OpenClNative.CL_DEVICE_NAME);
                 Console.WriteLine($"  [{deviceList.Count}] {dName} on Platform \"{pName}\" ({pVendor})");
-                deviceList.Add((platforms[i], devices[d], dName, pName));
+                deviceList.Add((platforms[i], devicesBuffer[d], dName, pName));
             }
         }
         Console.ResetColor();
@@ -417,7 +413,6 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
         // 1. Explicit GPU parameter matching (-g / --gpu)
         if (!string.IsNullOrWhiteSpace(gpuArg))
         {
-            // Explicit numeric index match
             if (int.TryParse(gpuArg, out int explicitIdx))
             {
                 if (explicitIdx >= 0 && explicitIdx < deviceList.Count)
@@ -426,11 +421,9 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
                     return (match.Platform, match.Device, match.DevName, match.PlatformName, explicitIdx);
                 }
 
-                // Out of range index -> fail directly, do NOT fallback
                 return (nint.Zero, nint.Zero, "", "", 0);
             }
 
-            // Name / Substring match
             for (int i = 0; i < deviceList.Count; i++)
             {
                 var entry = deviceList[i];
@@ -441,7 +434,6 @@ void main() { FragColor = texture(uUiTexture, TexCoord); }";
                 }
             }
 
-            // Name not found -> fail directly, do NOT fallback
             return (nint.Zero, nint.Zero, "", "", 0);
         }
 
