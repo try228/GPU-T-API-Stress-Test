@@ -39,6 +39,7 @@ public static class Program
         string? backendStr = Environment.GetEnvironmentVariable("API_backend");
         string? gpuArg = null;
         int duration = 0;
+        bool useNativeD3D = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -54,6 +55,10 @@ public static class Program
             else if ((arg is "--gpu" or "-g") && i + 1 < args.Length) gpuArg = args[++i];
             else if (arg.StartsWith("-g=", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("--gpu=", StringComparison.OrdinalIgnoreCase))
                 gpuArg = arg.Substring(arg.IndexOf('=') + 1);
+            else if (arg is "--native-d3d" or "--native-payload" or "-n")
+            {
+                useNativeD3D = true;
+            }
             else if (arg == "--list-gpus")
             {
                 GpuDeviceManager.PrintGpuList();
@@ -64,6 +69,11 @@ public static class Program
                 PrintHelp();
                 return 0;
             }
+        }
+
+        if (Environment.GetEnvironmentVariable("GPUT_EXPERIMENTAL_D3D") == "1")
+        {
+            useNativeD3D = true;
         }
 
         try
@@ -88,9 +98,6 @@ public static class Program
             // Direct execution dispatch
             switch (backend)
             {
-                case TargetBackend.Vk:
-                    VulkanStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex);
-                    break;
                 case TargetBackend.Gl:
                 case TargetBackend.Zink:
                     OpenGlStressBenchmark.Run(lifecycle.Token, duration, isGles: false, isZink: backend == TargetBackend.Zink, selectedGpuIndex);
@@ -98,6 +105,9 @@ public static class Program
                 case TargetBackend.Gles:
                 case TargetBackend.ZinkEs:
                     OpenGlStressBenchmark.Run(lifecycle.Token, duration, isGles: true, isZink: backend == TargetBackend.ZinkEs, selectedGpuIndex);
+                    break;
+                case TargetBackend.Vk:
+                    VulkanStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex);
                     break;
                 case TargetBackend.Cl:
                 case TargetBackend.MesaCl:
@@ -115,26 +125,26 @@ public static class Program
 
                 // Direct3D 9
                 case TargetBackend.Dxvk9:
-                    Dx9StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Dxvk, targetGpu);
+                    Dx9StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Dxvk, targetGpu, useNativeD3D);
                     break;
                 case TargetBackend.Wd3d9:
-                    Dx9StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.WineD3D, targetGpu);
+                    Dx9StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.WineD3D, targetGpu, useNativeD3D);
                     break;
 
                 // Direct3D 11
                 case TargetBackend.Dxvk11:
-                    Dx11StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Dxvk, targetGpu);
+                    Dx11StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Dxvk, targetGpu, useNativeD3D);
                     break;
                 case TargetBackend.Wd3d11:
-                    Dx11StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.WineD3D, targetGpu);
+                    Dx11StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.WineD3D, targetGpu, useNativeD3D);
                     break;
 
                 // Direct3D 12
                 case TargetBackend.Vkd3d:
-                    Dx12StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Vkd3d, targetGpu);
+                    Dx12StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Vkd3d, targetGpu, useNativeD3D);
                     break;
                 case TargetBackend.Vkd3dP:
-                    Dx12StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Vkd3dProton, targetGpu);
+                    Dx12StressBenchmark.Run(lifecycle.Token, duration, D3DTranslationLayer.Vkd3dProton, targetGpu, useNativeD3D);
                     break;
             }
 
@@ -154,9 +164,10 @@ public static class Program
     {
         Console.WriteLine("Usage: GPU-T.StressTest [options]");
         Console.WriteLine("Options:");
-        Console.WriteLine("  -b, --backend <api>     Select backend: vk, gl, gles, zink, cl, mesa_cl, cuda, rocm, oapi, dxvk_9, dxvk_11, wd3d_9, wd3d_11, vkd3d, vkd3d_p");
+        Console.WriteLine("  -b, --backend <api>     Select backend (default: gl): gl, gles, vk, zink, cl, mesa_cl, cuda, rocm, oapi, dxvk_9, dxvk_11, wd3d_9, wd3d_11, vkd3d, vkd3d_p");
         Console.WriteLine("  -g, --gpu <index|name>  Select target GPU device by numeric index (0, 1) or name substring");
         Console.WriteLine("  -d, --duration <sec>    Initial test duration in seconds (0 = unlimited)");
+        Console.WriteLine("  -n, --native-d3d        Use lightweight native C payload (d3d_stress_native.exe) instead of managed .NET payload");
         Console.WriteLine("      --list-gpus         Print list of all detected GPU devices and exit");
         Console.WriteLine("  -h, --help              Show this help information");
     }

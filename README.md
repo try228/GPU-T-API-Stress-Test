@@ -1,6 +1,6 @@
 # GPU-T Stress Test & Benchmark Sidecar
 
-Standalone **Native AOT** GPU API benchmark and compute/graphics stress-test sidecar for **GPU-T**.
+Standalone **Native AOT GPU API benchmark and compute/graphics stress-test sidecar** for **GPU-T**.
 
 ## Build
 
@@ -15,7 +15,20 @@ dotnet publish Payloads/D3DPayload \
   -o bin/Release/net10.0/linux-x64/publish/payloads
 ```
 
-### 2. Publish the Linux Native AOT sidecar
+### 2. Optional: Build the experimental native C Direct3D payload
+
+Requires `mingw-w64-gcc`:
+
+```bash
+x86_64-w64-mingw32-gcc -O3 -s -mwindows \
+  Payloads/D3DPayload/NativeD3D/d3dstress.c \
+  -o bin/Release/net10.0/linux-x64/publish/payloads/d3d_stress_native.exe \
+  -ld3d9 -ld3d11 -ld3d12 -ldxgi -ldxguid -lm
+```
+
+The native payload can be selected at runtime with `--native-d3d`.
+
+### 3. Publish the Linux Native AOT sidecar
 
 ```bash
 dotnet publish -c Release -r linux-x64
@@ -31,13 +44,14 @@ dotnet publish -c Release -r linux-x64
 
 ### Options
 
-| Option                    | Description                                                                                                          |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `-b, --backend <api>`     | Target backend API. Default: `gl`.                                                                                   |
-| `-g, --gpu <index\|name>` | Target GPU by numeric index, such as `0` or `1`, or by a name/vendor substring, such as `amd`, `intel`, or `nvidia`. |
-| `-d, --duration <sec>`    | Initial stress-test duration in seconds. Use `0` for unlimited duration.                                             |
-| `--list-gpus`             | Enumerate all detected GPU devices, including PCI IDs, and exit.                                                     |
-| `-h, --help`              | Display CLI usage information.                                                                                       |
+| Option                    | Description                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `-b, --backend <api>`     | Target backend API. Default: `gl`.                                                                                        |
+| `-g, --gpu <index\|name>` | Target GPU by numeric index, such as `0` or `1`, or by a name/vendor substring, such as `amd`, `intel`, or `nvidia`.      |
+| `-d, --duration <sec>`    | Initial stress-test duration in seconds. Use `0` for unlimited duration.                                                  |
+| `-n, --native-d3d`        | Use the experimental lightweight native C Direct3D payload (`d3d_stress_native.exe`) instead of the managed .NET payload. |
+| `--list-gpus`             | Enumerate all detected GPU devices, including PCI IDs, and exit.                                                          |
+| `-h, --help`              | Display CLI usage information.                                                                                            |
 
 > **Note:** The backend can also be specified through the `API_backend` environment variable:
 >
@@ -51,18 +65,18 @@ dotnet publish -c Release -r linux-x64
 
 ## Native Linux Backends
 
-| Identifier           | Target Graphics / Compute API                        |
-| -------------------- | ---------------------------------------------------- |
-| `vk`, `vulkan`       | Vulkan 1.0 baseline compute queue                    |
-| `gl`, `opengl`       | Desktop OpenGL 3.3 Core                              |
-| `gles`, `opengles`   | OpenGL ES 3.0                                        |
-| `zink`               | Zink — OpenGL over Vulkan                            |
-| `zink_es`            | Zink — OpenGL ES over Vulkan                         |
-| `cl`, `opencl`       | OpenCL 1.2+ compute                                  |
-| `mesa_cl`, `rusticl` | Mesa Rusticl — Rust-based OpenCL                     |
-| `cuda`               | NVIDIA CUDA Driver API, native or ZLUDA on AMD/Intel |
-| `rocm`, `hip`        | AMD ROCm / HIP Runtime                               |
-| `oapi`, `oneapi`     | Intel oneAPI Level Zero                              |
+| Identifier           | Target Graphics / Compute API                         |
+| -------------------- | ----------------------------------------------------- |
+| `gl`, `opengl`       | Desktop OpenGL 3.3 Core — **Default**                 |
+| `gles`, `opengles`   | OpenGL ES 3.0                                         |
+| `vk`, `vulkan`       | Vulkan 1.0 baseline compute queue                     |
+| `zink`               | Zink — OpenGL over Vulkan                             |
+| `zink_es`            | Zink — OpenGL ES over Vulkan                          |
+| `cl`, `opencl`       | OpenCL 1.2+ compute                                   |
+| `mesa_cl`, `rusticl` | Mesa Rusticl — Rust-based OpenCL                      |
+| `cuda`               | NVIDIA CUDA Driver API — native or ZLUDA on AMD/Intel |
+| `rocm`, `hip`        | AMD ROCm / HIP Runtime                                |
+| `oapi`, `oneapi`     | Intel oneAPI Level Zero                               |
 
 ---
 
@@ -79,11 +93,11 @@ dotnet publish -c Release -r linux-x64
 
 ---
 
-## Notes
+## Notes & Architecture
 
 ### Device Selection
 
-Compute APIs such as **Vulkan, OpenCL, CUDA, ROCm, and oneAPI**, as well as translation layers such as **DXVK** and **VKD3D/VKD3D-Proton**, directly target the GPU selected with:
+Compute APIs such as **Vulkan, OpenCL, CUDA, ROCm, and oneAPI**, as well as Vulkan-based Direct3D translation layers such as **DXVK** and **VKD3D/VKD3D-Proton**, can directly target the GPU selected with:
 
 ```bash
 -g <index|name>
@@ -101,7 +115,25 @@ For native OpenGL, a secondary GPU can instead be targeted through Zink:
 ./GPU-T.StressTest -b zink -g <index>
 ```
 
-There is intentionally **no equivalent WineD3D-over-Zink path**. Stacking one translation layer on top of another—for example, WineD3D → OpenGL → Zink → Vulkan—would add unnecessary complexity and overhead, and is not considered a practical use case.
+There is intentionally **no equivalent WineD3D-over-Zink path**. Stacking multiple translation layers, for example:
+
+```text
+WineD3D → OpenGL → Zink → Vulkan
+```
+
+would add unnecessary complexity and overhead and is not considered a practical use case.
+
+### Direct3D Payload Selection
+
+By default, Windows Direct3D backends use the managed .NET Direct3D payload.
+
+To use the experimental lightweight native C implementation instead, build `d3d_stress_native.exe` and run:
+
+```bash
+./GPU-T.StressTest -b dxvk_11 --native-d3d
+```
+
+The `--native-d3d` option applies to the Windows Direct3D payload path and does not affect native Linux graphics or compute backends.
 
 ### ZLUDA Support
 

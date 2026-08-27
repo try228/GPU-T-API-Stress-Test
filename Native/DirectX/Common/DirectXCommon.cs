@@ -4,9 +4,6 @@ using GPU_T.StressTest.Runtimes;
 
 namespace GPU_T.StressTest.Native.DirectX.Common;
 
-/// <summary>
-/// Supported Direct3D translation layer implementations.
-/// </summary>
 public enum D3DTranslationLayer
 {
     Dxvk,
@@ -15,12 +12,10 @@ public enum D3DTranslationLayer
     Vkd3dProton
 }
 
-/// <summary>
-/// Common process runner and environment manager for Direct3D workloads under Wine/Proton.
-/// </summary>
 public static class DirectXRunner
 {
-    private const string PayloadExecutable = "d3d_stress.exe";
+    private const string ManagedPayload = "d3d_stress.exe";
+    private const string NativePayload = "d3d_stress_native.exe";
 
     public static void LaunchPayload(
         RuntimeEnvironment runtime,
@@ -28,25 +23,38 @@ public static class DirectXRunner
         D3DTranslationLayer layer,
         GpuDeviceDescriptor? targetGpu,
         int durationSec,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool useNativePayload = false)
     {
-        string payloadPath = Path.Combine(AppContext.BaseDirectory, PayloadExecutable);
+        string targetExe = useNativePayload ? NativePayload : ManagedPayload;
+        string payloadPath = Path.Combine(AppContext.BaseDirectory, targetExe);
+
         if (!File.Exists(payloadPath))
         {
-            string subPath = Path.Combine(AppContext.BaseDirectory, "payloads", PayloadExecutable);
+            string subPath = Path.Combine(AppContext.BaseDirectory, "payloads", targetExe);
             payloadPath = File.Exists(subPath) ? subPath : payloadPath;
+        }
+
+        // Fallback to managed payload if native payload binary is missing
+        if (!File.Exists(payloadPath) && useNativePayload)
+        {
+            Console.WriteLine($"[DirectXRunner] Native payload '{NativePayload}' not found. Falling back to managed '{ManagedPayload}'.");
+            payloadPath = Path.Combine(AppContext.BaseDirectory, "payloads", ManagedPayload);
+            useNativePayload = false;
         }
 
         if (!File.Exists(payloadPath))
         {
             throw new FileNotFoundException(
-                $"Direct3D Windows payload '{PayloadExecutable}' was not found!\n" +
-                $"Please build it with: 'dotnet publish Payloads/D3DPayload -c Release -r win-x64 -o {Path.GetDirectoryName(payloadPath)}'");
+                $"Direct3D payload executable was not found!\n" +
+                $"Build managed: 'dotnet publish Payloads/D3DPayload -c Release -r win-x64 -o {Path.GetDirectoryName(payloadPath)}'\n" +
+                $"Build native C: 'bash Payloads/D3DPayload/NativeD3D/build_native.sh'");
         }
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"\n[DirectXRunner] Runtime:           [{runtime.Type}] {runtime.Name}");
         Console.WriteLine($"[DirectXRunner] Direct3D API:      {apiIdentifier.ToUpperInvariant()} ({layer})");
+        Console.WriteLine($"[DirectXRunner] Payload Engine:    {Path.GetFileName(payloadPath)} {(useNativePayload ? "[EXPERIMENTAL NATIVE C]" : "[MANAGED .NET]")}");
         if (targetGpu != null)
         {
             Console.WriteLine($"[DirectXRunner] Target GPU Filter: [{targetGpu.Index}] {targetGpu.Name}");

@@ -3,9 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace GPU_T.StressTest.Payloads.D3D;
 
-/// <summary>
-/// Direct3D 9 hardware rendering and stress engine (Zero external DLL dependencies).
-/// </summary>
 public static unsafe partial class DX9Runner
 {
     private const string D3D9Lib = "d3d9.dll";
@@ -44,6 +41,21 @@ public static unsafe partial class DX9Runner
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct D3DADAPTER_IDENTIFIER9
+    {
+        public fixed byte Driver[512];
+        public fixed byte Description[512];
+        public fixed byte DeviceName[32];
+        public long DriverVersion;
+        public uint VendorId;
+        public uint DeviceId;
+        public uint SubSysId;
+        public uint Revision;
+        public Guid DeviceIdentifier;
+        public uint WHQLLevel;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct D3DLOCKED_RECT
     {
         public int Pitch;
@@ -67,6 +79,19 @@ public static unsafe partial class DX9Runner
         nint d3d9 = Direct3DCreate9(D3D_SDK_VERSION);
         if (d3d9 == nint.Zero) throw new InvalidOperationException("Failed to initialize Direct3D 9 (d3d9.dll).");
 
+        nint* vtbl = *(nint**)d3d9;
+
+        // Query Real GPU Name from D3D9 Adapter
+        delegate* unmanaged[Stdcall]<nint, uint, uint, D3DADAPTER_IDENTIFIER9*, int> getAdapterIdentifier =
+            (delegate* unmanaged[Stdcall]<nint, uint, uint, D3DADAPTER_IDENTIFIER9*, int>)vtbl[5];
+
+        D3DADAPTER_IDENTIFIER9 ident;
+        string gpuName = "Direct3D 9 GPU";
+        if (getAdapterIdentifier(d3d9, 0, 0, &ident) == 0)
+        {
+            gpuName = Marshal.PtrToStringAnsi((nint)ident.Description) ?? "Direct3D 9 GPU";
+        }
+
         D3DPRESENT_PARAMETERS d3dpp = new()
         {
             BackBufferWidth = (uint)PixelUiEngine.BaseWidth,
@@ -74,21 +99,19 @@ public static unsafe partial class DX9Runner
             BackBufferFormat = D3DFMT_A8R8G8B8,
             BackBufferCount = 1,
             Windowed = 1,
-            SwapEffect = 1, // D3DSWAPEFFECT_DISCARD
+            SwapEffect = 1,
             hDeviceWindow = hwnd,
-            PresentationInterval = 0x80000000 // VSync OFF
+            PresentationInterval = 0x80000000
         };
 
-        nint* vtbl = *(nint**)d3d9;
         delegate* unmanaged[Stdcall]<nint, uint, int, nint, uint, D3DPRESENT_PARAMETERS*, nint*, int> createDevice =
             (delegate* unmanaged[Stdcall]<nint, uint, int, nint, uint, D3DPRESENT_PARAMETERS*, nint*, int>)vtbl[16];
 
         nint device = nint.Zero;
-        // Attempt hardware vertex processing, fallback to software if unsupported
         int res = createDevice(d3d9, 0, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &d3dpp, &device);
         if (res != 0)
         {
-            res = createDevice(d3d9, 0, D3DDEVTYPE_HAL, hwnd, 0x00000020 /* SOFTWARE */, &d3dpp, &device);
+            res = createDevice(d3d9, 0, D3DDEVTYPE_HAL, hwnd, 0x00000020, &d3dpp, &device);
         }
         if (res != 0 || device == nint.Zero)
             throw new InvalidOperationException($"D3D9 CreateDevice failed with HRESULT: 0x{res:X8}");
@@ -189,7 +212,7 @@ public static unsafe partial class DX9Runner
             }
         };
 
-        Console.WriteLine("[D3D9Runner] Direct3D 9 Stress Loop Active (100% Saturation)...");
+        Console.WriteLine($"[D3D9Runner] Direct3D 9 Device: {gpuName}");
 
         while (Win32Window.ProcessMessages())
         {
@@ -203,13 +226,12 @@ public static unsafe partial class DX9Runner
             double elapsed = isBenchmarking ? benchTimer.Elapsed.TotalSeconds : 0.0;
             double tflops = isBenchmarking ? (currentFps * 1.52) / 1000.0 : 0.0;
 
-            // 2048 fullscreen alpha-blended passes per frame for 100% GPU fillrate saturation
             if (isBenchmarking)
             {
                 beginScene(device);
                 setFvf(device, D3DFVF_XYZRHW | D3DFVF_TEX1);
 
-                for (int p = 0; p < 2048; p++)
+                for (int p = 0; p < 4096; p++)
                 {
                     drawPrimitiveUp(device, D3DPT_TRIANGLESTRIP, 2, quadVerts, (uint)sizeof(D3DVERTEX));
                 }
@@ -221,7 +243,7 @@ public static unsafe partial class DX9Runner
             {
                 PixelUiEngine.Render(
                     pUi, PixelUiEngine.BaseWidth, PixelUiEngine.BaseHeight,
-                    "Direct3D 9", "Direct3D 9 HAL Device",
+                    "Direct3D 9", gpuName,
                     isBenchmarking, targetDuration, customText, isCustomFocused,
                     elapsed, currentFps, tflops,
                     ThemePalette.Dxvk,

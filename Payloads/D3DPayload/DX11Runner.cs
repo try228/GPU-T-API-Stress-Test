@@ -3,9 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace GPU_T.StressTest.Payloads.D3D;
 
-/// <summary>
-/// Direct3D 11 hardware rendering and pipeline stress engine.
-/// </summary>
 public static unsafe partial class DX11Runner
 {
     private const string D3D11Lib = "d3d11.dll";
@@ -46,6 +43,20 @@ public static unsafe partial class DX11Runner
         public int Windowed;
         public int SwapEffect;
         public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DXGI_ADAPTER_DESC
+    {
+        public fixed char Description[128];
+        public uint VendorId;
+        public uint DeviceId;
+        public uint SubSysId;
+        public uint Revision;
+        public nuint DedicatedVideoMemory;
+        public nuint DedicatedSystemMemory;
+        public nuint SharedSystemMemory;
+        public long AdapterLuid;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -102,6 +113,36 @@ public static unsafe partial class DX11Runner
         if (res != 0 || swapChain == nint.Zero)
             throw new InvalidOperationException($"D3D11CreateDeviceAndSwapChain failed with HRESULT: 0x{res:X8}");
 
+        // Query Real GPU Name from IDXGIDevice
+        string gpuName = "Direct3D 11 GPU";
+        Guid idxgiDeviceGuid = new("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
+        nint dxgiDevice = nint.Zero;
+
+        nint* devVtbl = *(nint**)device;
+        delegate* unmanaged[Stdcall]<nint, in Guid, nint*, int> queryInterface =
+            (delegate* unmanaged[Stdcall]<nint, in Guid, nint*, int>)devVtbl[0];
+
+        if (queryInterface(device, in idxgiDeviceGuid, &dxgiDevice) == 0 && dxgiDevice != nint.Zero)
+        {
+            nint* dxgiDevVtbl = *(nint**)dxgiDevice;
+            delegate* unmanaged[Stdcall]<nint, nint*, int> getAdapter =
+                (delegate* unmanaged[Stdcall]<nint, nint*, int>)dxgiDevVtbl[7];
+
+            nint adapter = nint.Zero;
+            if (getAdapter(dxgiDevice, &adapter) == 0 && adapter != nint.Zero)
+            {
+                nint* adapterVtbl = *(nint**)adapter;
+                delegate* unmanaged[Stdcall]<nint, DXGI_ADAPTER_DESC*, int> getDesc =
+                    (delegate* unmanaged[Stdcall]<nint, DXGI_ADAPTER_DESC*, int>)adapterVtbl[8];
+
+                DXGI_ADAPTER_DESC desc;
+                if (getDesc(adapter, &desc) == 0)
+                {
+                    gpuName = new string(desc.Description);
+                }
+            }
+        }
+
         nint* scVtbl = *(nint**)swapChain;
         delegate* unmanaged[Stdcall]<nint, uint, in Guid, nint*, int> getBuffer =
             (delegate* unmanaged[Stdcall]<nint, uint, in Guid, nint*, int>)scVtbl[9];
@@ -112,7 +153,6 @@ public static unsafe partial class DX11Runner
         nint backBuffer = nint.Zero;
         getBuffer(swapChain, 0, in d3d11Texture2DGuid, &backBuffer);
 
-        nint* devVtbl = *(nint**)device;
         delegate* unmanaged[Stdcall]<nint, D3D11_TEXTURE2D_DESC*, void*, nint*, int> createTexture2D =
             (delegate* unmanaged[Stdcall]<nint, D3D11_TEXTURE2D_DESC*, void*, nint*, int>)devVtbl[5];
 
@@ -191,7 +231,7 @@ public static unsafe partial class DX11Runner
             }
         };
 
-        Console.WriteLine("[D3D11Runner] Direct3D 11 Active (100% Saturation)...");
+        Console.WriteLine($"[D3D11Runner] Direct3D 11 Device: {gpuName}");
 
         while (Win32Window.ProcessMessages())
         {
@@ -209,7 +249,7 @@ public static unsafe partial class DX11Runner
             {
                 PixelUiEngine.Render(
                     pUi, PixelUiEngine.BaseWidth, PixelUiEngine.BaseHeight,
-                    "Direct3D 11", "Direct3D 11 Graphics Device",
+                    "Direct3D 11", gpuName,
                     isBenchmarking, targetDuration, customText, isCustomFocused,
                     elapsed, currentFps, tflops,
                     ThemePalette.Dxvk,
@@ -226,8 +266,7 @@ public static unsafe partial class DX11Runner
                     }
                     unmap(context, stagingTexture, 0);
 
-                    // 512 texture copy passes per frame for 100% pipeline and VRAM bandwidth saturation
-                    int passes = isBenchmarking ? 512 : 1;
+                    int passes = isBenchmarking ? 1024 : 1;
                     for (int p = 0; p < passes; p++)
                     {
                         copyResource(context, backBuffer, stagingTexture);
