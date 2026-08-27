@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 1. Сборка Direct3D Windows пейлоада (Native AOT) на Windows раннере
   build-d3d-payload:
     name: Build Windows D3D Payload (Native AOT)
     runs-on: windows-latest
@@ -21,11 +22,8 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Publish D3D Payload as Native AOT
-        shell: bash
         run: |
-          # Автоматически находим .csproj пейлоада без риска опечатки в регистре
-          PAYLOAD_PROJ=$(find Payloads -name "*D3DPayload*.csproj" | head -n 1)
-          dotnet publish "$PAYLOAD_PROJ" -c Release -r win-x64 /p:PublishAot=true -o ./publish-payload
+          dotnet publish Payloads/D3DPayload/D3DPayload.csproj -c Release -r win-x64 -p:PublishAot=true -o ./publish-payload
 
       - name: Upload D3D Payload Artifact
         uses: actions/upload-artifact@v4
@@ -33,6 +31,7 @@ jobs:
           name: d3d-payload
           path: ./publish-payload/d3d_stress.exe
 
+  # 2. Сборка основного агента на Linux (Native AOT) и упаковка пейлоада
   build-linux-sidecar:
     name: Build Linux Sidecar & Package
     runs-on: ubuntu-latest
@@ -53,9 +52,8 @@ jobs:
 
       - name: Publish Linux Agent (Native AOT)
         run: |
-          # Автоматически находим основной .csproj (исключая Payloads) с учетом регистра
           MAIN_PROJ=$(find . -maxdepth 2 -name "*Stress*.csproj" -not -path "*/Payloads/*" | head -n 1)
-          echo "Found project: $MAIN_PROJ"
+          echo "Building: $MAIN_PROJ"
           dotnet publish "$MAIN_PROJ" -c Release -r linux-x64 -o ./publish-linux
 
       - name: Download Windows D3D Payload
