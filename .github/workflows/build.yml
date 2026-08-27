@@ -1,0 +1,67 @@
+name: Build & Package GPU-T Stress Test (Native AOT)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  # 1. Сборка Direct3D пейлоада через чистый Native AOT на Windows раннере
+  build-d3d-payload:
+    name: Build Windows D3D Payload (Native AOT)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish D3D Payload as Native AOT
+        run: |
+          dotnet publish Payloads/D3DPayload/D3DPayload.csproj -c Release -r win-x64 /p:PublishAot=true -o ./publish-payload
+
+      - name: Upload D3D Payload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: d3d-payload
+          path: ./publish-payload/d3d_stress.exe
+
+  # 2. Сборка основного агента на Linux (Native AOT) и упаковка пейлоада
+  build-linux-sidecar:
+    name: Build Linux Sidecar & Package
+    runs-on: ubuntu-latest
+    needs: build-d3d-payload
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev libvulkan-dev libglfw3-dev
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish Linux Agent (Native AOT)
+        run: |
+          dotnet publish GPU-T.StressTest.csproj -c Release -r linux-x64 -o ./publish-linux
+
+      - name: Download Windows D3D Payload
+        uses: actions/download-artifact@v4
+        with:
+          name: d3d-payload
+          path: ./publish-linux/payloads
+
+      - name: Upload Final Release Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPU-T-StressTest-Linux-AOT
+          path: ./publish-linux/

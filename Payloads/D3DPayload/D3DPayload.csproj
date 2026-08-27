@@ -10,19 +10,15 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-
-    <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>full</TrimMode>
+    <PublishAot Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <EventSourceSupport>false</EventSourceSupport>
-    <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
-    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
-    <StackTraceSupport>false</StackTraceSupport>
-    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <StripSymbols>true</StripSymbols>
+
+    <PublishSingleFile Condition="!$([MSBuild]::IsOSPlatform('Windows'))">true</PublishSingleFile>
+    <SelfContained Condition="!$([MSBuild]::IsOSPlatform('Windows'))">true</SelfContained>
+    <EnableCompressionInSingleFile Condition="!$([MSBuild]::IsOSPlatform('Windows'))">true</EnableCompressionInSingleFile>
+    <PublishTrimmed Condition="!$([MSBuild]::IsOSPlatform('Windows'))">true</PublishTrimmed>
+    <TrimMode Condition="!$([MSBuild]::IsOSPlatform('Windows'))">full</TrimMode>
   </PropertyGroup>
 
 </Project>
