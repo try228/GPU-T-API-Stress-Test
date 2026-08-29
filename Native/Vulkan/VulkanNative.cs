@@ -3,66 +3,53 @@ using System.Runtime.InteropServices;
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Direct P/Invoke bindings for Vulkan instance and device management (libvulkan.so.1).
+/// Native Vulkan loader bindings and interop structures strictly targeting the Linux platform (libvulkan.so.1).
 /// </summary>
 public static unsafe partial class VulkanNative
 {
-    private const string VulkanLib = "libvulkan.so.1";
+    /// <summary>
+    /// Linux native Vulkan runtime library soname.
+    /// </summary>
+    public const string VulkanLib = "libvulkan.so.1";
 
     [LibraryImport(VulkanLib, EntryPoint = "vkGetInstanceProcAddr")]
     public static partial nint vkGetInstanceProcAddr(nint instance, byte* pName);
 
-    [LibraryImport(VulkanLib, EntryPoint = "vkCreateInstance")]
-    public static partial int vkCreateInstance(VkInstanceCreateInfo* pCreateInfo, nint pAllocator, nint* pInstance);
+    /// <summary>
+    /// Function pointer delegate for vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR.
+    /// </summary>
+    public delegate void PFN_vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR(
+        nint physicalDevice,
+        nint pPerformanceQueryInfo,
+        uint* pNumPasses);
 
-    [LibraryImport(VulkanLib, EntryPoint = "vkDestroyInstance")]
-    public static partial void vkDestroyInstance(nint instance, nint pAllocator);
-
-    [LibraryImport(VulkanLib, EntryPoint = "vkEnumeratePhysicalDevices")]
-    public static partial int vkEnumeratePhysicalDevices(nint instance, uint* pPhysicalDeviceCount, nint* pPhysicalDevices);
-
-    [LibraryImport(VulkanLib, EntryPoint = "vkCreateDevice")]
-    public static partial int vkCreateDevice(nint physicalDevice, VkDeviceCreateInfo* pCreateInfo, nint pAllocator, nint* pDevice);
-
-    [LibraryImport(VulkanLib, EntryPoint = "vkDestroyDevice")]
-    public static partial void vkDestroyDevice(nint device, nint pAllocator);
-
-    // Extension delegates for VK_KHR_performance_query
+    /// <summary>
+    /// Function pointer delegate for vkAcquireProfilingLockKHR.
+    /// </summary>
     public delegate int PFN_vkAcquireProfilingLockKHR(nint device, VkAcquireProfilingLockInfoKHR* pInfo);
+
+    /// <summary>
+    /// Function pointer delegate for vkReleaseProfilingLockKHR.
+    /// </summary>
     public delegate void PFN_vkReleaseProfilingLockKHR(nint device);
 }
 
-/// <summary>Vulkan instance creation descriptor.</summary>
+/// <summary>
+/// Physical device features descriptor for VK_KHR_performance_query.
+/// Enables counter query pool allocation on logical devices.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct VkInstanceCreateInfo
+public unsafe struct VkPhysicalDevicePerformanceQueryFeaturesKHR
 {
     public int sType;
     public void* pNext;
-    public uint flags;
-    public void* pApplicationInfo;
-    public uint enabledLayerCount;
-    public byte** ppEnabledLayerNames;
-    public uint enabledExtensionCount;
-    public byte** ppEnabledExtensionNames;
+    public uint performanceCounterQueryPools;
+    public uint performanceCounterMultipleQueryPools;
 }
 
-/// <summary>Vulkan logical device creation descriptor.</summary>
-[StructLayout(LayoutKind.Sequential)]
-public unsafe struct VkDeviceCreateInfo
-{
-    public int sType;
-    public void* pNext;
-    public uint flags;
-    public uint queueCreateInfoCount;
-    public void* pQueueCreateInfos;
-    public uint enabledLayerCount;
-    public byte** ppEnabledLayerNames;
-    public uint enabledExtensionCount;
-    public byte** ppEnabledExtensionNames;
-    public void* pEnabledFeatures;
-}
-
-/// <summary>Profiling lock parameters for VK_KHR_performance_query.</summary>
+/// <summary>
+/// Profiling lock acquisition descriptor for VK_KHR_performance_query.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct VkAcquireProfilingLockInfoKHR
 {
@@ -70,4 +57,17 @@ public unsafe struct VkAcquireProfilingLockInfoKHR
     public void* pNext;
     public uint flags;
     public ulong timeout;
+}
+
+/// <summary>
+/// Query parameters descriptor used to determine the number of required profiling passes.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkQueryPoolPerformanceCreateInfoKHR
+{
+    public int sType;
+    public void* pNext;
+    public uint queueFamilyIndex;
+    public uint counterIndexCount;
+    public uint* pCounterIndices;
 }

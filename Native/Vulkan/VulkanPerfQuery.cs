@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -5,23 +6,15 @@ using Silk.NET.Vulkan;
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Manages hardware performance queries and profiling locks via the VK_KHR_performance_query extension.
+/// Manages hardware performance queries, profiling locks, and silicon counter decoding via VK_KHR_performance_query.
+/// Fully compliant with Vulkan sType initialization requirements and dynamic profiling lock lifecycles.
 /// </summary>
 public sealed unsafe class VulkanPerfQueryManager : IDisposable
 {
-    public delegate Result PfnEnumerateCounters(
-        PhysicalDevice physicalDevice,
-        uint queueFamilyIndex,
-        uint* pCounterCount,
-        PerformanceCounterKHR* pCounters,
-        PerformanceCounterDescriptionKHR* pCounterDescriptions);
-
-    public delegate Result PfnAcquireProfilingLock(
-        Device device,
-        AcquireProfilingLockInfoKHR* pInfo);
-
-    public delegate void PfnReleaseProfilingLock(
-        Device device);
+    private delegate* unmanaged[Cdecl]<PhysicalDevice, uint, uint*, PerformanceCounterKHR*, PerformanceCounterDescriptionKHR*, Result> _pfnEnumerate;
+    private delegate* unmanaged[Cdecl]<PhysicalDevice, QueryPoolPerformanceCreateInfoKHR*, uint*, void> _pfnGetPasses;
+    private delegate* unmanaged[Cdecl]<Device, AcquireProfilingLockInfoKHR*, Result> _pfnAcquireLock;
+    private delegate* unmanaged[Cdecl]<Device, void> _pfnReleaseLock;
 
     private readonly Vk _vk;
     private readonly Instance _instance;
@@ -29,37 +22,50 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
     private readonly PhysicalDevice _physicalDevice;
     private readonly uint _queueFamilyIndex;
     private readonly uint _querySlotsCount;
-    private readonly bool _deviceExtensionActive;
 
-    private PfnEnumerateCounters? _pfnEnumerate;
-    private PfnAcquireProfilingLock? _pfnAcquireLock;
-    private PfnReleaseProfilingLock? _pfnReleaseLock;
-
-    private bool _lockAcquired;
     private QueryPool _queryPool = default;
     private uint _selectedCounterIndex = uint.MaxValue;
     private PerformanceCounterStorageKHR _counterStorage;
     private PerformanceCounterUnitKHR _counterUnit;
 
+    private uint _totalHardwareCounters = 0;
+    private uint _requiredPasses = 1;
+    private bool _lockAcquired = false;
     private double _smoothedValue = 0.0;
+    private readonly object _stateLock = new();
 
-    /// <summary>Indicates whether VK_KHR_performance_query is supported on this GPU.</summary>
-    public bool IsSupported => _deviceExtensionActive && _pfnEnumerate != null && _queryPool.Handle != 0;
+    /// <summary>
+    /// Gets a value indicating whether hardware performance queries are supported by the driver.
+    /// </summary>
+    public bool IsSupported => _queryPool.Handle != 0;
 
-    /// <summary>Indicates whether the hardware query pool was allocated successfully.</summary>
-    public bool IsQueryPoolReady => _queryPool.Handle != 0;
+    /// <summary>
+    /// Gets a value indicating whether the profiling lock is currently held on the GPU silicon.
+    /// </summary>
+    public bool IsLockAcquired => _lockAcquired;
 
-    /// <summary>Handle to the underlying Vulkan query pool.</summary>
-    public QueryPool QueryPoolHandle => _queryPool;
-
-    /// <summary>Display name of the active silicon hardware counter.</summary>
+    /// <summary>
+    /// Gets the human-readable display name of the selected GPU silicon counter.
+    /// </summary>
     public string SelectedCounterName { get; private set; } = "None";
 
-    /// <summary>Formatted output string representing the current live hardware reading.</summary>
+    /// <summary>
+    /// Gets the total number of hardware performance counters exposed by the GPU queue family.
+    /// </summary>
+    public uint TotalHardwareCounters => _totalHardwareCounters;
+
+    /// <summary>
+    /// Gets the formatted telemetry string representing the live hardware sensor readout and status.
+    /// </summary>
     public string FormattedCounterValue { get; private set; } = "N/A (Pipeline Math Fallback)";
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="VulkanPerfQueryManager"/> class.
+    /// Gets the handle to the underlying Vulkan performance query pool.
+    /// </summary>
+    public QueryPool QueryPool => _queryPool;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="VulkanPerfQueryManager"/> class without forcing the GPU into a permanent profiling lock.
     /// </summary>
     public VulkanPerfQueryManager(
         Vk vk,
@@ -67,8 +73,7 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         Device device,
         PhysicalDevice physicalDevice,
         uint queueFamilyIndex,
-        uint querySlotsCount,
-        bool deviceExtensionActive)
+        uint querySlotsCount = 1)
     {
         _vk = vk;
         _instance = instance;
@@ -76,32 +81,27 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         _physicalDevice = physicalDevice;
         _queueFamilyIndex = queueFamilyIndex;
         _querySlotsCount = Math.Max(1, querySlotsCount);
-        _deviceExtensionActive = deviceExtensionActive;
 
         Initialize();
     }
 
     private void Initialize()
     {
-        if (!_deviceExtensionActive)
-        {
-            FormattedCounterValue = "N/A (Pipeline Math Fallback)";
-            return;
-        }
-
         nint pEnum = GetProc("vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR");
+        nint pPasses = GetProc("vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR");
         nint pAcq = GetProc("vkAcquireProfilingLockKHR");
         nint pRel = GetProc("vkReleaseProfilingLockKHR");
 
-        if (pEnum == nint.Zero)
+        if (pEnum == nint.Zero || pAcq == nint.Zero || pRel == nint.Zero)
         {
-            FormattedCounterValue = "N/A (Pipeline Math Fallback)";
+            FormattedCounterValue = "N/A (VK_KHR_performance_query procs missing)";
             return;
         }
 
-        _pfnEnumerate = Marshal.GetDelegateForFunctionPointer<PfnEnumerateCounters>(pEnum);
-        if (pAcq != nint.Zero) _pfnAcquireLock = Marshal.GetDelegateForFunctionPointer<PfnAcquireProfilingLock>(pAcq);
-        if (pRel != nint.Zero) _pfnReleaseLock = Marshal.GetDelegateForFunctionPointer<PfnReleaseProfilingLock>(pRel);
+        _pfnEnumerate = (delegate* unmanaged[Cdecl]<PhysicalDevice, uint, uint*, PerformanceCounterKHR*, PerformanceCounterDescriptionKHR*, Result>)pEnum;
+        if (pPasses != nint.Zero) _pfnGetPasses = (delegate* unmanaged[Cdecl]<PhysicalDevice, QueryPoolPerformanceCreateInfoKHR*, uint*, void>)pPasses;
+        _pfnAcquireLock = (delegate* unmanaged[Cdecl]<Device, AcquireProfilingLockInfoKHR*, Result>)pAcq;
+        _pfnReleaseLock = (delegate* unmanaged[Cdecl]<Device, void>)pRel;
 
         try
         {
@@ -109,12 +109,19 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             Result countRes = _pfnEnumerate(_physicalDevice, _queueFamilyIndex, &counterCount, null, null);
             if (countRes != Result.Success || counterCount == 0)
             {
-                FormattedCounterValue = "N/A (0 Counters on GPU)";
+                FormattedCounterValue = "N/A (0 hardware counters reported by driver)";
                 return;
             }
 
+            _totalHardwareCounters = counterCount;
             PerformanceCounterKHR* pCounters = stackalloc PerformanceCounterKHR[(int)counterCount];
             PerformanceCounterDescriptionKHR* pDescs = stackalloc PerformanceCounterDescriptionKHR[(int)counterCount];
+
+            for (int i = 0; i < (int)counterCount; i++)
+            {
+                pCounters[i].SType = (StructureType)1000116005; // VK_STRUCTURE_TYPE_PERFORMANCE_COUNTER_KHR
+                pDescs[i].SType = (StructureType)1000116006;    // VK_STRUCTURE_TYPE_PERFORMANCE_COUNTER_DESCRIPTION_KHR
+            }
 
             _pfnEnumerate(_physicalDevice, _queueFamilyIndex, &counterCount, pCounters, pDescs);
 
@@ -122,7 +129,8 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             for (uint i = 0; i < counterCount; i++)
             {
                 string name = Marshal.PtrToStringAnsi((nint)pDescs[i].Name)?.ToLowerInvariant() ?? "";
-                if (name.Contains("valu") || name.Contains("alu") || name.Contains("busy") || name.Contains("utilization") || name.Contains("active"))
+                if (name.Contains("valu") || name.Contains("alu") || name.Contains("busy") || 
+                    name.Contains("active") || name.Contains("utilization") || name.Contains("compute"))
                 {
                     targetIdx = i;
                     break;
@@ -132,16 +140,23 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             _selectedCounterIndex = targetIdx;
             _counterStorage = pCounters[targetIdx].Storage;
             _counterUnit = pCounters[targetIdx].Unit;
-            SelectedCounterName = Marshal.PtrToStringAnsi((nint)pDescs[targetIdx].Name) ?? "HW Counter";
+            SelectedCounterName = Marshal.PtrToStringAnsi((nint)pDescs[targetIdx].Name) ?? "GPU Silicon Counter";
 
             uint cIdx = _selectedCounterIndex;
             QueryPoolPerformanceCreateInfoKHR perfPoolInfo = new()
             {
-                SType = StructureType.QueryPoolPerformanceCreateInfoKhr,
+                SType = (StructureType)1000116002, // VK_STRUCTURE_TYPE_QUERY_POOL_PERFORMANCE_CREATE_INFO_KHR
                 QueueFamilyIndex = _queueFamilyIndex,
                 CounterIndexCount = 1,
                 PCounterIndices = &cIdx
             };
+
+            if (_pfnGetPasses != null)
+            {
+                uint passes = 1;
+                _pfnGetPasses(_physicalDevice, &perfPoolInfo, &passes);
+                _requiredPasses = Math.Max(1, passes);
+            }
 
             QueryPoolCreateInfo qpInfo = new()
             {
@@ -156,19 +171,19 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             if (qpRes == Result.Success)
             {
                 _queryPool = qp;
-                FormattedCounterValue = $"{SelectedCounterName}: Ready";
+                FormattedCounterValue = $"[{SelectedCounterName}] Ready (Standby Mode)";
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"[PerfQuery] Multi-slot QueryPool created for [{SelectedCounterName}]");
+                Console.WriteLine($"[PerfQuery] Bound silicon counter: [{SelectedCounterName}] (Passes: {_requiredPasses}, Total Counters: {_totalHardwareCounters})");
                 Console.ResetColor();
             }
             else
             {
-                FormattedCounterValue = "N/A (Pipeline Math Fallback)";
+                FormattedCounterValue = "N/A (QueryPool creation rejected)";
             }
         }
-        catch
+        catch (Exception ex)
         {
-            FormattedCounterValue = "N/A (Pipeline Math Fallback)";
+            FormattedCounterValue = $"N/A ({ex.Message})";
         }
     }
 
@@ -181,55 +196,69 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
     }
 
     /// <summary>
-    /// Acquires the profiling lock to fix GPU clock frequencies.
+    /// Acquires the GPU profiling lock. Called strictly when benchmarking starts.
     /// </summary>
-    public void AcquireLock()
+    public bool AcquireLock()
     {
-        if (!IsQueryPoolReady || _pfnAcquireLock == null || _lockAcquired) return;
-        try
+        lock (_stateLock)
         {
-            AcquireProfilingLockInfoKHR lockInfo = new()
+            if (_pfnAcquireLock == null || _lockAcquired) return _lockAcquired;
+            try
             {
-                SType = StructureType.AcquireProfilingLockInfoKhr,
-                Timeout = 2_000_000_000
-            };
-            if (_pfnAcquireLock(_device, &lockInfo) == Result.Success)
-            {
-                _lockAcquired = true;
-                _smoothedValue = 0.0;
+                AcquireProfilingLockInfoKHR lockInfo = new()
+                {
+                    SType = (StructureType)1000116004, // VK_STRUCTURE_TYPE_ACQUIRE_PROFILING_LOCK_INFO_KHR
+                    Timeout = 1_000_000_000 // 1.0 second timeout
+                };
+                Result res = _pfnAcquireLock(_device, &lockInfo);
+                if (res == Result.Success)
+                {
+                    _lockAcquired = true;
+                    _smoothedValue = 0.0;
+                    return true;
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"[PerfQuery] Note: vkAcquireProfilingLockKHR returned {res}.");
+                    Console.ResetColor();
+                }
             }
+            catch { }
+            return false;
         }
-        catch { }
     }
 
     /// <summary>
-    /// Releases the profiling lock to return GPU to idle power state.
+    /// Releases the GPU profiling lock. Called strictly when benchmarking stops to return GPU to 0% idle state.
     /// </summary>
     public void ReleaseLock()
     {
-        if (!IsQueryPoolReady || _pfnReleaseLock == null || !_lockAcquired) return;
-        try
+        lock (_stateLock)
         {
-            _pfnReleaseLock(_device);
-            _lockAcquired = false;
-            _smoothedValue = 0.0;
+            if (_pfnReleaseLock == null || !_lockAcquired) return;
+            try
+            {
+                _pfnReleaseLock(_device);
+                _lockAcquired = false;
+                FormattedCounterValue = $"[{SelectedCounterName}] Ready (Standby Mode)";
+            }
+            catch { }
         }
-        catch { }
     }
 
     /// <summary>
-    /// Fetches query results from the completed frame slot and applies EMA smoothing.
+    /// Fetches the hardware query results for a specific slot and updates the EMA smoothed telemetry.
     /// </summary>
-    /// <param name="slotIndex">Frame slot index.</param>
-    public void FetchResults(uint slotIndex)
+    public void FetchResults(uint slotIndex = 0)
     {
-        if (!IsQueryPoolReady) return;
+        if (_queryPool.Handle == 0 || !_lockAcquired) return;
 
         PerformanceCounterResultKHR result = default;
         Result res = _vk.GetQueryPoolResults(
             _device,
             _queryPool,
-            slotIndex,
+            slotIndex % _querySlotsCount,
             1,
             (nuint)sizeof(PerformanceCounterResultKHR),
             &result,
@@ -249,9 +278,9 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
                 _ => 0.0
             };
 
-            if (rawVal > 0.01)
+            if (rawVal > 0.0001)
             {
-                _smoothedValue = (_smoothedValue == 0.0) ? rawVal : (_smoothedValue * 0.8 + rawVal * 0.2);
+                _smoothedValue = (_smoothedValue == 0.0) ? rawVal : (_smoothedValue * 0.85 + rawVal * 0.15);
             }
 
             string unitStr = _counterUnit switch
@@ -260,16 +289,15 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
                 PerformanceCounterUnitKHR.HertzKhr => " Hz",
                 PerformanceCounterUnitKHR.BytesPerSecondKhr => " B/s",
                 PerformanceCounterUnitKHR.CyclesKhr => " cycles",
+                PerformanceCounterUnitKHR.NanosecondsKhr => " ns",
+                PerformanceCounterUnitKHR.WattsKhr => " W",
                 _ => ""
             };
 
-            FormattedCounterValue = $"{SelectedCounterName} = {_smoothedValue:F1}{unitStr} (Direct Silicon)";
+            FormattedCounterValue = $"{SelectedCounterName}: {_smoothedValue:F1}{unitStr} [Silicon Active]";
         }
     }
 
-    /// <summary>
-    /// Releases unmanaged resources and destroys the query pool.
-    /// </summary>
     public void Dispose()
     {
         ReleaseLock();
