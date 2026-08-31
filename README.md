@@ -80,8 +80,6 @@ dotnet publish -c Release -r linux-x64
 | `rocm`, `hip`        | AMD ROCm / HIP Runtime                                |
 | `oapi`, `oneapi`     | Intel oneAPI Level Zero                               |
 
-**⚠️ Attention: The Vulkan backend currently requires the Vulkan SDK due to validation layers temporarily enabled during development. This requirement may be removed once the Vulkan implementation is finalized.**
-
 ---
 
 ## Windows Direct3D Backends via Wine / Proton
