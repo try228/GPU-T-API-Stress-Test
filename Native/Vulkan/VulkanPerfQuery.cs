@@ -7,7 +7,7 @@ namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
 /// Manages hardware performance queries, profiling locks, and silicon counter decoding via VK_KHR_performance_query.
-/// Fully compliant with Vulkan sType initialization requirements and dynamic profiling lock lifecycles.
+/// Fully compliant with Vulkan specification requirements and NativeAOT.
 /// </summary>
 public sealed unsafe class VulkanPerfQueryManager : IDisposable
 {
@@ -65,7 +65,7 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
     public QueryPool QueryPool => _queryPool;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="VulkanPerfQueryManager"/> class without forcing the GPU into a permanent profiling lock.
+    /// Initializes a new instance of the <see cref="VulkanPerfQueryManager"/> class.
     /// </summary>
     public VulkanPerfQueryManager(
         Vk vk,
@@ -119,8 +119,8 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
 
             for (int i = 0; i < (int)counterCount; i++)
             {
-                pCounters[i].SType = (StructureType)1000116005; // VK_STRUCTURE_TYPE_PERFORMANCE_COUNTER_KHR
-                pDescs[i].SType = (StructureType)1000116006;    // VK_STRUCTURE_TYPE_PERFORMANCE_COUNTER_DESCRIPTION_KHR
+                pCounters[i].SType = VulkanConstants.StructureTypePerformanceCounterKHR;
+                pDescs[i].SType = VulkanConstants.StructureTypePerformanceCounterDescriptionKHR;
             }
 
             _pfnEnumerate(_physicalDevice, _queueFamilyIndex, &counterCount, pCounters, pDescs);
@@ -145,7 +145,7 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             uint cIdx = _selectedCounterIndex;
             QueryPoolPerformanceCreateInfoKHR perfPoolInfo = new()
             {
-                SType = (StructureType)1000116002, // VK_STRUCTURE_TYPE_QUERY_POOL_PERFORMANCE_CREATE_INFO_KHR
+                SType = VulkanConstants.StructureTypeQueryPoolPerformanceCreateInfoKHR,
                 QueueFamilyIndex = _queueFamilyIndex,
                 CounterIndexCount = 1,
                 PCounterIndices = &cIdx
@@ -207,7 +207,7 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             {
                 AcquireProfilingLockInfoKHR lockInfo = new()
                 {
-                    SType = (StructureType)1000116004, // VK_STRUCTURE_TYPE_ACQUIRE_PROFILING_LOCK_INFO_KHR
+                    SType = VulkanConstants.StructureTypeAcquireProfilingLockInfoKHR,
                     Timeout = 1_000_000_000 // 1.0 second timeout
                 };
                 Result res = _pfnAcquireLock(_device, &lockInfo);

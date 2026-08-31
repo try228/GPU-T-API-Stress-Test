@@ -18,9 +18,15 @@ namespace GPU_T.StressTest;
 
 /// <summary>
 /// Main entry point for the GPU-T Stress Test sidecar agent.
+/// Parses CLI arguments, configures environment overrides, and routes execution to selected backend.
 /// </summary>
 public static class Program
 {
+    /// <summary>
+    /// Application main execution entry point.
+    /// </summary>
+    /// <param name="args">Command-line arguments.</param>
+    /// <returns>Process exit code (0 on success, 1 on fatal error).</returns>
     public static int Main(string[] args)
     {
         // 1. Isolated ROCm compute worker process
@@ -40,6 +46,8 @@ public static class Program
         string? gpuArg = null;
         int duration = 0;
         bool useNativeD3D = false;
+        bool enableDebug = false;
+        MockGpuTarget mockGpu = MockGpuTarget.None;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -55,9 +63,21 @@ public static class Program
             else if ((arg is "--gpu" or "-g") && i + 1 < args.Length) gpuArg = args[++i];
             else if (arg.StartsWith("-g=", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("--gpu=", StringComparison.OrdinalIgnoreCase))
                 gpuArg = arg.Substring(arg.IndexOf('=') + 1);
+            else if ((arg is "--mock-gpu" or "-m") && i + 1 < args.Length)
+            {
+                mockGpu = ParseMockGpuTarget(args[++i]);
+            }
+            else if (arg.StartsWith("--mock-gpu=", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("-m=", StringComparison.OrdinalIgnoreCase))
+            {
+                mockGpu = ParseMockGpuTarget(arg.Substring(arg.IndexOf('=') + 1));
+            }
             else if (arg is "--native-d3d" or "--native-payload" or "-n")
             {
                 useNativeD3D = true;
+            }
+            else if (arg is "--debug" or "-dbg" or "--vk-debug")
+            {
+                enableDebug = true;
             }
             else if (arg == "--list-gpus")
             {
@@ -76,6 +96,11 @@ public static class Program
             useNativeD3D = true;
         }
 
+        if (Environment.GetEnvironmentVariable("GPUT_DEBUG") == "1")
+        {
+            enableDebug = true;
+        }
+
         try
         {
             var backend = BackendRouter.ParseBackend(backendStr);
@@ -90,6 +115,18 @@ public static class Program
 
             Console.WriteLine("=== GPU-T Benchmark & Stress Test Sidecar (Native AOT) ===");
             Console.WriteLine($"[Agent] Target Backend: {backend}");
+            if (enableDebug)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("[Agent] Vulkan Debug Messenger Active (VK_EXT_debug_utils)");
+                Console.ResetColor();
+            }
+            if (mockGpu != MockGpuTarget.None)
+            {
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.WriteLine($"[Agent] Virtual Mock GPU Active: {mockGpu}");
+                Console.ResetColor();
+            }
             if (targetGpu != null)
                 Console.WriteLine($"[Agent] Target Device:  [{selectedGpuIndex}] {targetGpu.Name} ({targetGpu.Vendor})");
 
@@ -107,7 +144,7 @@ public static class Program
                     OpenGlStressBenchmark.Run(lifecycle.Token, duration, isGles: true, isZink: backend == TargetBackend.ZinkEs, selectedGpuIndex);
                     break;
                 case TargetBackend.Vk:
-                    VulkanStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex);
+                    VulkanStressBenchmark.Run(lifecycle.Token, duration, selectedGpuIndex, mockGpu, enableDebug);
                     break;
                 case TargetBackend.Cl:
                 case TargetBackend.MesaCl:
@@ -160,6 +197,15 @@ public static class Program
         }
     }
 
+    private static MockGpuTarget ParseMockGpuTarget(string val) => val.ToLowerInvariant() switch
+    {
+        "nvidia" or "blackwell" or "nv" or "rtx" => MockGpuTarget.NvidiaBlackwell,
+        "intel" or "battlemage" or "arc" or "xmx" => MockGpuTarget.IntelBattlemage,
+        "amd" or "rdna3" or "radeon" => MockGpuTarget.AmdRdna3,
+        "pascal" or "legacy" or "gtx" => MockGpuTarget.LegacyPascal,
+        _ => MockGpuTarget.None
+    };
+
     private static void PrintHelp()
     {
         Console.WriteLine("Usage: GPU-T.StressTest [options]");
@@ -167,7 +213,9 @@ public static class Program
         Console.WriteLine("  -b, --backend <api>     Select backend (default: gl): gl, gles, vk, zink, cl, mesa_cl, cuda, rocm, oapi, dxvk_9, dxvk_11, wd3d_9, wd3d_11, vkd3d, vkd3d_p");
         Console.WriteLine("  -g, --gpu <index|name>  Select target GPU device by numeric index (0, 1) or name substring");
         Console.WriteLine("  -d, --duration <sec>    Initial test duration in seconds (0 = unlimited)");
+        Console.WriteLine("  -m, --mock-gpu <vendor> Simulate virtual GPU architecture (nvidia, intel, rdna3, pascal)");
         Console.WriteLine("  -n, --native-d3d        Use lightweight native C payload (d3d_stress_native.exe) instead of managed .NET payload");
+        Console.WriteLine("      --debug, -dbg       Enable Vulkan debug messenger (VK_EXT_debug_utils) callback logging");
         Console.WriteLine("      --list-gpus         Print list of all detected GPU devices and exit");
         Console.WriteLine("  -h, --help              Show this help information");
     }

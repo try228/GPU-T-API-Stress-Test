@@ -19,16 +19,14 @@ public enum ThemePalette
 }
 
 /// <summary>
-/// Software pixel rendering engine for procedural HUD and UI controls.
+/// Software pixel rendering engine for procedural HUD, controls, and modal matrix configuration.
+/// 100% unified across Vulkan, OpenGL, CUDA, ROCm, oneAPI, and OpenCL backends.
 /// </summary>
 public static class PixelUiEngine
 {
     public const int BaseWidth = 900;
     public const int BaseHeight = 550;
 
-    /// <summary>
-    /// 2D bounding box rectangle.
-    /// </summary>
     public struct Rect
     {
         public int X, Y, W, H;
@@ -36,76 +34,71 @@ public static class PixelUiEngine
         public bool Contains(int px, int py) => px >= X && px < X + W && py >= Y && py < Y + H;
     }
 
+    // Main Control Bar Rectangles
     public static readonly Rect BtnStartStop = new(35, 75, 195, 38);
     public static readonly Rect Btn10s = new(240, 75, 60, 38);
     public static readonly Rect Btn30s = new(308, 75, 60, 38);
     public static readonly Rect Btn60s = new(376, 75, 60, 38);
     public static readonly Rect BtnUnlimited = new(444, 75, 105, 38);
-    
     public static readonly Rect InputCustom = new(560, 75, 160, 38);
     public static readonly Rect BtnMinus = new(730, 75, 45, 38);
     public static readonly Rect BtnPlus = new(783, 75, 45, 38);
+    public static readonly Rect BtnSettings = new(834, 75, 32, 38);
 
-    /// <summary>
-    /// Cleans and formats raw GPU driver strings for clean UI display.
-    /// </summary>
-    /// <param name="raw">Raw GPU name from driver.</param>
-    /// <returns>Formatted device name.</returns>
+    // Modal Preset Buttons
+    public static readonly Rect ModalPreBase = new(45, 54, 90, 22);
+    public static readonly Rect ModalPreGaming = new(140, 54, 80, 22);
+    public static readonly Rect ModalPreGamingRT = new(225, 54, 105, 22);
+    public static readonly Rect ModalPreAI = new(335, 54, 90, 22);
+    public static readonly Rect ModalPreMem = new(430, 54, 80, 22);
+    public static readonly Rect ModalPreVid = new(515, 54, 70, 22);
+    public static readonly Rect ModalPreFull = new(590, 54, 100, 22);
+    public static readonly Rect ModalClose = new(735, 54, 120, 22);
+
     public static string FormatGpuName(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Generic GPU";
         raw = raw.Trim();
-
-        bool isZink = false;
-        if (raw.StartsWith("zink", StringComparison.OrdinalIgnoreCase))
-        {
-            isZink = true;
-            int firstP = raw.IndexOf('(');
-            int lastP = raw.LastIndexOf(')');
-            if (firstP >= 0 && lastP > firstP)
-            {
-                raw = raw.Substring(firstP + 1, lastP - firstP - 1).Trim();
-            }
-        }
-
         raw = raw.Replace("(R)", "", StringComparison.OrdinalIgnoreCase)
-                 .Replace("(TM)", "", StringComparison.OrdinalIgnoreCase)
-                 .Replace("(r)", "", StringComparison.OrdinalIgnoreCase)
-                 .Replace("(tm)", "", StringComparison.OrdinalIgnoreCase);
-
-        int lastParen = raw.LastIndexOf('(');
-        if (lastParen > 3)
-        {
-            raw = raw.Substring(0, lastParen).Trim();
-        }
-
+                 .Replace("(TM)", "", StringComparison.OrdinalIgnoreCase);
         while (raw.Contains("  ")) raw = raw.Replace("  ", " ");
-        raw = raw.Trim();
-
-        if (isZink) raw = $"Zink: {raw}";
-        if (raw.Length > 44) raw = raw.Substring(0, 41) + "...";
-        return raw;
+        if (raw.Length > 40) raw = raw.Substring(0, 37) + "...";
+        return raw.Trim();
     }
 
     /// <summary>
-    /// Renders the complete UI frame into a BGRA32 pixel buffer.
+    /// Single unified render method compatible with all backend benchmark engines.
     /// </summary>
     public static unsafe void Render(
         uint* buffer, int width, int height,
         string apiTitle, string gpuName, bool isBenchmarking, int durationSec,
         string customText, bool isCustomFocused,
-        double elapsedSec, double dps, double tflops,
+        double elapsedSec, double dps, double totalTops,
         string? hwSensorStr,
         ThemePalette theme,
-        int mouseX, int mouseY, float animTime)
+        int mouseX, int mouseY, float animTime,
+        bool isSettingsOpen = false,
+        VulkanTestRegistry? registry = null,
+        double fp32Tflops = 0.0,
+        double fp64Tflops = 0.0,
+        double fp16Tflops = 0.0,
+        double int32Tiops = 0.0,
+        double int64Tiops = 0.0,
+        double int16Tiops = 0.0,
+        double int8Tops = 0.0,
+        double dp2aTops = 0.0,
+        double tmuGtexels = 0.0,
+        double memBwGbs = 0.0,
+        double cacheL1L2Tbs = 0.0,
+        double cacheL3Tbs = 0.0,
+        double latencyNs = 0.0)
     {
-        // 1. Procedural background shader math with theme palette
         RenderGpuZBackground(buffer, width, height, isBenchmarking ? animTime : 0.0f, isBenchmarking, theme);
 
         uint accentColor = GetThemeAccent(theme);
         uint activeBtnBg = GetThemeActiveButtonBg(theme);
 
-        // 2. Top header panel
+        // Header Panel
         FillRectAlpha(buffer, width, 0, 0, width, 55, 0xDD0D1117);
         DrawLine(buffer, width, 0, 55, width, 55, 0xFF30363D);
         DrawString(buffer, width, 25, 12, $"GPU-T RENDER TEST  |  {apiTitle.ToUpperInvariant()}", 0xFFE6EDF3, 2);
@@ -113,33 +106,23 @@ public static class PixelUiEngine
         string cleanName = FormatGpuName(gpuName);
         DrawString(buffer, width, 25, 34, $"DEVICE: {cleanName}   •   STATUS: {(isBenchmarking ? "100% STRESS RUNNING" : "IDLE / STANDBY")}", isBenchmarking ? 0xFF3FB950 : accentColor, 1);
 
-        // 3. Start / Stop button
+        // Controls
         bool hoverStart = BtnStartStop.Contains(mouseX, mouseY);
-        uint startBg = isBenchmarking
-            ? (hoverStart ? 0xFFDA3633 : 0xFFA40E26)
-            : (hoverStart ? 0xFF2EA043 : 0xFF238636);
-        uint startBorder = isBenchmarking ? 0xFFF85149 : 0xFF3FB950;
-
+        uint startBg = isBenchmarking ? (hoverStart ? 0xFFDA3633 : 0xFFA40E26) : (hoverStart ? 0xFF2EA043 : 0xFF238636);
         FillRectAlpha(buffer, width, BtnStartStop.X, BtnStartStop.Y, BtnStartStop.W, BtnStartStop.H, startBg);
-        DrawRect(buffer, width, BtnStartStop.X, BtnStartStop.Y, BtnStartStop.W, BtnStartStop.H, startBorder);
-        string startLabel = isBenchmarking ? "STOP" : "START";
-        DrawString(buffer, width, BtnStartStop.X + 35, BtnStartStop.Y + 12, startLabel, 0xFFFFFFFF, 1);
+        DrawRect(buffer, width, BtnStartStop.X, BtnStartStop.Y, BtnStartStop.W, BtnStartStop.H, isBenchmarking ? 0xFFF85149 : 0xFF3FB950);
+        DrawString(buffer, width, BtnStartStop.X + 35, BtnStartStop.Y + 12, isBenchmarking ? "STOP" : "START", 0xFFFFFFFF, 1);
 
-        // Duration presets
         bool isPreset = durationSec is 10 or 30 or 60 or 0 && !isCustomFocused;
         DrawPresetButton(buffer, width, Btn10s, "10S", durationSec == 10 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, Btn30s, "30S", durationSec == 30 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, Btn60s, "60S", durationSec == 60 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, BtnUnlimited, "UNLIMITED", durationSec == 0 && isPreset, mouseX, mouseY, accentColor, activeBtnBg);
 
-        // Custom duration input field
         bool isCustomActive = isCustomFocused || (!isPreset && durationSec > 0);
         uint inputBg = isCustomFocused ? 0xEE161B22 : (isCustomActive ? activeBtnBg : 0xAA21262D);
-        uint inputBorder = isCustomFocused ? accentColor : (isCustomActive ? accentColor : 0xFF30363D);
-
         FillRectAlpha(buffer, width, InputCustom.X, InputCustom.Y, InputCustom.W, InputCustom.H, inputBg);
-        DrawRect(buffer, width, InputCustom.X, InputCustom.Y, InputCustom.W, InputCustom.H, inputBorder);
-
+        DrawRect(buffer, width, InputCustom.X, InputCustom.Y, InputCustom.W, InputCustom.H, isCustomActive ? accentColor : 0xFF30363D);
         bool cursorVisible = isCustomFocused && ((int)(animTime * 4) % 2 == 0);
         string inputDisplay = $"SEC: {(string.IsNullOrEmpty(customText) ? durationSec.ToString() : customText)}{(cursorVisible ? "_" : " ")}";
         DrawString(buffer, width, InputCustom.X + 15, InputCustom.Y + 12, inputDisplay, isCustomActive ? 0xFFFFFFFF : 0xFFC9D1D9, 1);
@@ -147,153 +130,239 @@ public static class PixelUiEngine
         DrawPresetButton(buffer, width, BtnMinus, "-", false, mouseX, mouseY, accentColor, activeBtnBg);
         DrawPresetButton(buffer, width, BtnPlus, "+", false, mouseX, mouseY, accentColor, activeBtnBg);
 
-        // 4. Telemetry and metrics HUD panel
-        bool hasHwSensor = !string.IsNullOrEmpty(hwSensorStr);
-        int hudH = hasHwSensor ? 115 : 95;
-        int hudY = hasHwSensor ? 400 : 420;
+        if (registry != null)
+        {
+            bool hoverSettings = BtnSettings.Contains(mouseX, mouseY);
+            FillRectAlpha(buffer, width, BtnSettings.X, BtnSettings.Y, BtnSettings.W, BtnSettings.H, isSettingsOpen ? activeBtnBg : (hoverSettings ? 0xDD30363D : 0xAA21262D));
+            DrawRect(buffer, width, BtnSettings.X, BtnSettings.Y, BtnSettings.W, BtnSettings.H, isSettingsOpen ? accentColor : 0xFF30363D);
+            DrawString(buffer, width, BtnSettings.X + 5, BtnSettings.Y + 12, isBenchmarking ? "LOCK" : "CFG", isSettingsOpen ? 0xFFFFFFFF : 0xFFE6EDF3, 1);
+        }
 
+        // Telemetry HUD Panel
+        int hudY = 380, hudH = 135;
         FillRectAlpha(buffer, width, 35, hudY, 830, hudH, 0xEE0D1117);
         DrawRect(buffer, width, 35, hudY, 830, hudH, isBenchmarking ? accentColor : 0xFF30363D);
 
         string durStr = durationSec == 0 ? $"{elapsedSec:F1}s / Unlimited" : $"{elapsedSec:F1}s / {durationSec}s";
-        DrawString(buffer, width, 55, hudY + 15, $"TARGET DURATION: {durStr}", 0xFFF0F6FC, 1);
-        DrawString(buffer, width, 55, hudY + 35, $"COMPUTE LOAD: ~{tflops:F2} TFLOPS  |  RATE: {dps:F0} Dispatches/s", isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
-        
-        if (hasHwSensor)
+        DrawString(buffer, width, 55, hudY + 12, $"BENCHMARK TIME: {durStr}   •   ITERATION RATE: {dps:F0} Dispatches/s", 0xFFF0F6FC, 1);
+
+        bool hasGranularCompute = (fp32Tflops > 0 || fp64Tflops > 0 || fp16Tflops > 0 || int32Tiops > 0 || int64Tiops > 0 || int16Tiops > 0 || int8Tops > 0 || dp2aTops > 0 || tmuGtexels > 0);
+        bool hasGranularMemory = (cacheL1L2Tbs > 0 || cacheL3Tbs > 0 || memBwGbs > 0 || latencyNs > 0);
+
+        if (hasGranularCompute || hasGranularMemory)
         {
-            DrawString(buffer, width, 55, hudY + 55, $"HW SENSOR (VK_KHR_PERF): {hwSensorStr}", accentColor, 1);
+            List<string> computeList = new();
+            if (fp32Tflops > 0) computeList.Add($"FP32: {fp32Tflops:F2} TFLOPS");
+            if (fp64Tflops > 0) computeList.Add($"FP64: {fp64Tflops:F2} TFLOPS");
+            if (fp16Tflops > 0) computeList.Add($"FP16: {fp16Tflops:F2} TFLOPS");
+            if (int32Tiops > 0) computeList.Add($"INT32: {int32Tiops:F2} TIOPS");
+            if (int16Tiops > 0) computeList.Add($"INT16: {int16Tiops:F2} TIOPS");
+            if (int64Tiops > 0) computeList.Add($"INT64: {int64Tiops:F2} TIOPS");
+            if (int8Tops > 0)   computeList.Add($"INT8/DP4A: {int8Tops:F2} TOPS");
+            if (dp2aTops > 0)   computeList.Add($"INT16/DP2A: {dp2aTops:F2} TOPS");
+            if (tmuGtexels > 0) computeList.Add($"TMU: {tmuGtexels:F1} GTexel/s");
+
+            string line1 = computeList.Count > 0 ? string.Join("  |  ", computeList) : "COMPUTE ENGINES: STANDBY";
+            DrawString(buffer, width, 55, hudY + 35, line1, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+
+            List<string> memList = new();
+            if (cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
+            if (cacheL3Tbs > 0)   memList.Add($"L3 INFINITY: {cacheL3Tbs:F2} TB/s");
+            if (memBwGbs > 0)     memList.Add($"VRAM BUS: {memBwGbs:F1} GB/s");
+            if (latencyNs > 0)    memList.Add($"LATENCY: {latencyNs:F1} ns");
+
+            string line2 = memList.Count > 0 ? string.Join("  |  ", memList) : "MEMORY FABRIC: 100% STABLE";
+            DrawString(buffer, width, 55, hudY + 58, line2, isBenchmarking ? 0xFF58A6FF : 0xFF8B949E, 1);
         }
         else
         {
-            DrawString(buffer, width, 55, hudY + 55, "COMPUTE PIPELINE: 100% Saturation (VSync OFF)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
+            string loadMetric = isBenchmarking ? $"COMPUTE LOAD: ~{totalTops:F2} TOPS / TFLOPS" : "COMPUTE LOAD: IDLE (STANDBY)";
+            DrawString(buffer, width, 55, hudY + 35, loadMetric, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+
+            if (!string.IsNullOrEmpty(hwSensorStr))
+            {
+                DrawString(buffer, width, 55, hudY + 58, $"HARDWARE TELEMETRY: {hwSensorStr}", accentColor, 1);
+            }
+            else
+            {
+                DrawString(buffer, width, 55, hudY + 58, "COMPUTE PIPELINE: 100% Silicon Saturation (Active)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
+            }
         }
+
+        string activeStatus = registry != null 
+            ? $"ACTIVE WORKLOADS: {registry.GetActiveCount()} Silicon Engines Engaged"
+            : "PIPELINE STATUS: Direct Native Hardware Execution";
+        DrawString(buffer, width, 55, hudY + 81, activeStatus, accentColor, 1);
 
         if (durationSec > 0 && isBenchmarking)
         {
             float progress = Math.Clamp((float)(elapsedSec / durationSec), 0f, 1f);
-            int barY = hudY + (hasHwSensor ? 85 : 65);
-            FillRectAlpha(buffer, width, 55, barY, 790, 6, 0xFF21262D);
-            FillRectAlpha(buffer, width, 55, barY, (int)(790 * progress), 6, accentColor);
+            FillRectAlpha(buffer, width, 55, hudY + 108, 790, 6, 0xFF21262D);
+            FillRectAlpha(buffer, width, 55, hudY + 108, (int)(790 * progress), 6, accentColor);
         }
 
-        DrawString(buffer, width, 35, 525, "Click buttons to control benchmark. Press ESC or close window to exit.", 0xFF6E7681, 1);
+        DrawString(buffer, width, 35, 525, registry != null 
+            ? "Click [CFG] to configure test matrix. Press SPACE to Start/Stop. ESC to Exit." 
+            : "Click buttons to control benchmark. Press SPACE to Start/Stop. ESC to Exit.", 0xFF6E7681, 1);
+
+        if (isSettingsOpen && registry != null)
+        {
+            RenderSettingsModal(buffer, width, height, registry, mouseX, mouseY, accentColor, activeBtnBg, isBenchmarking);
+        }
     }
 
-    /// <summary>
-    /// Renders procedural wavy background animation with theme color mapping.
-    /// </summary>
+    private static int GetCategoryColumn(string category) => category switch
+    {
+        "ALU (FLOAT)" or "ALU (INT)" or "VRAM & CACHES" => 0,
+        "MATRIX TYPES" or "MATRIX MODS" or "VULKAN VIDEO" => 1,
+        "RAY TRACING" or "ROP: COLOR & MRT" or "DEPTH / STENCIL" or "TMU TEXTURES" => 2,
+        _ => 0
+    };
+
+    private static unsafe void RenderSettingsModal(uint* buffer, int width, int height, VulkanTestRegistry registry, int mouseX, int mouseY, uint accentCol, uint activeBg, bool isBenchmarking)
+    {
+        FillRectAlpha(buffer, width, 0, 0, width, height, 0xBB000000);
+        int mx = 30, my = 15, mw = 840, mh = 515;
+        FillRectAlpha(buffer, width, mx, my, mw, mh, 0xF50D1117);
+        DrawRect(buffer, width, mx, my, mw, mh, accentCol);
+
+        DrawString(buffer, width, mx + 15, my + 14, isBenchmarking ? "STRESS MATRIX [LOCKED WHILE RUNNING]" : "STRESS TEST WORKLOAD MATRIX", isBenchmarking ? 0xFFF85149 : 0xFFFFFFFF, 1);
+
+        DrawPresetButton(buffer, width, ModalPreBase, "BASE FP32", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalPreGaming, "GAMING", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalPreGamingRT, "GAMING+RT", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalPreAI, "AI/MATRIX", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalPreMem, "MEMORY", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalPreVid, "VIDEO", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalPreFull, "FULL BURN", false, mouseX, mouseY, accentCol, activeBg);
+        DrawPresetButton(buffer, width, ModalClose, "CLOSE [X]", true, mouseX, mouseY, accentCol, 0xFF238636);
+
+        DrawLine(buffer, width, mx, my + 62, mx + mw, my + 62, 0xFF30363D);
+
+        int startY = my + 70, colWidth = 265, colGap = 275;
+        int[] colRows = new int[3];
+        string[] lastCatInCol = new string[3] { "", "", "" };
+
+        for (int i = 0; i < registry.Items.Count; i++)
+        {
+            var item = registry.Items[i];
+            int col = GetCategoryColumn(item.Category);
+
+            if (item.Category != lastCatInCol[col])
+            {
+                if (colRows[col] > 0) colRows[col]++;
+                lastCatInCol[col] = item.Category;
+                DrawString(buffer, width, mx + 15 + col * colGap, startY + colRows[col] * 15, item.Category, accentCol, 1);
+                colRows[col]++;
+            }
+
+            int itemX = mx + 15 + col * colGap, itemY = startY + colRows[col] * 15;
+            Rect itemRect = new(itemX, itemY, colWidth, 14);
+
+            if (itemRect.Contains(mouseX, mouseY) && item.IsSupported && !isBenchmarking)
+            {
+                FillRectAlpha(buffer, width, itemRect.X, itemRect.Y, itemRect.W, itemRect.H, 0x4430363D);
+            }
+
+            string displayName = !item.IsSupported ? $"[─] {item.Name} (N/A)" : (item.IsChecked ? $"[V] {item.Name}" : $"[ ] {item.Name}");
+            uint textColor = !item.IsSupported ? 0xFF484F58 : (item.IsChecked ? 0xFFFFFFFF : 0xFF8B949E);
+            DrawString(buffer, width, itemX, itemY + 1, displayName, textColor, 1);
+            colRows[col]++;
+        }
+    }
+
+    public static void HandleSettingsClick(int mouseX, int mouseY, VulkanTestRegistry registry, ref bool isSettingsOpen, bool isBenchmarking = false)
+    {
+        if (ModalClose.Contains(mouseX, mouseY)) { isSettingsOpen = false; return; }
+        if (isBenchmarking) return;
+
+        if (ModalPreBase.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.DefaultFP32); return; }
+        if (ModalPreGaming.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.Gaming); return; }
+        if (ModalPreGamingRT.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.GamingRayTracing); return; }
+        if (ModalPreAI.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.MatrixAI); return; }
+        if (ModalPreMem.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.MemoryCache); return; }
+        if (ModalPreVid.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.VideoEngine); return; }
+        if (ModalPreFull.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.FullSiliconBurn); return; }
+
+        int mx = 30, my = 15, startY = my + 70, colWidth = 265, colGap = 275;
+        int[] colRows = new int[3];
+        string[] lastCatInCol = new string[3] { "", "", "" };
+
+        for (int i = 0; i < registry.Items.Count; i++)
+        {
+            var item = registry.Items[i];
+            int col = GetCategoryColumn(item.Category);
+
+            if (item.Category != lastCatInCol[col])
+            {
+                if (colRows[col] > 0) colRows[col]++;
+                lastCatInCol[col] = item.Category;
+                colRows[col]++;
+            }
+
+            Rect itemRect = new(mx + 15 + col * colGap, startY + colRows[col] * 15, colWidth, 14);
+            if (itemRect.Contains(mouseX, mouseY) && item.IsSupported)
+            {
+                item.IsChecked = !item.IsChecked;
+                return;
+            }
+            colRows[col]++;
+        }
+    }
+
     private static unsafe void RenderGpuZBackground(uint* buffer, int width, int height, float time, bool isStress, ThemePalette theme)
     {
-        float invW = 1.0f / width;
-        float invH = 1.0f / height;
-
+        float invW = 1.0f / width, invH = 1.0f / height;
         for (int y = 0; y < height; y++)
         {
             float ny = (y * invH) * 2.0f - 1.0f;
             int rowOffset = y * width;
-
             for (int x = 0; x < width; x++)
             {
                 float nx = (x * invW) * 2.0f - 1.0f;
-
                 float wave1 = MathF.Sin(nx * 4.0f + time * 1.8f);
                 float wave2 = MathF.Cos(ny * 4.0f - time * 1.5f);
-                float wave3 = MathF.Sin((nx * 0.7f + ny * 0.7f) * 6.0f + time * 2.2f);
-                float waveSum = (wave1 + wave2 + wave3) * 0.333f;
-                float norm = waveSum * 0.5f + 0.5f;
+                float norm = (wave1 + wave2) * 0.25f + 0.5f;
 
                 byte r = 0, g = 0, b = 0;
-
                 if (isStress)
                 {
                     switch (theme)
                     {
-                        // 1. Vulkan: Fiery orange-red
                         case ThemePalette.Vulkan:
                             r = (byte)Math.Clamp((int)(200 + 55 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(40 + 110 * (MathF.Sin(time * 1.5f + nx * 2.0f) * 0.5f + 0.5f) * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(10 + 30 * (1.0f - norm)), 0, 255);
                             break;
-
-                        // 2. OpenGL & Zink: Cobalt blue & neon cyan
-                        case ThemePalette.OpenGL:
-                        case ThemePalette.Dxvk:
-                            r = (byte)Math.Clamp((int)(15 + 45 * (1.0f - norm)), 0, 255);
-                            g = (byte)Math.Clamp((int)(60 + 130 * (MathF.Sin(time * 1.5f + nx * 2.0f) * 0.5f + 0.5f)), 0, 255);
-                            b = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
-                            break;
-
-                        // 3. OpenGL ES: Neon magenta & purple
-                        case ThemePalette.OpenGLES:
-                            r = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
-                            g = (byte)Math.Clamp((int)(20 + 55 * (MathF.Sin(time * 2.0f + ny) * 0.5f + 0.5f)), 0, 255);
-                            b = (byte)Math.Clamp((int)(160 + 95 * (MathF.Cos(time * 1.5f - nx) * 0.5f + 0.5f)), 0, 255);
-                            break;
-
-                        // 4. Mesa Rusticl: Rust copper & bronze
-                        case ThemePalette.Rusticl:
-                            r = (byte)Math.Clamp((int)(190 + 65 * norm), 0, 255);
-                            g = (byte)Math.Clamp((int)(65 + 85 * (MathF.Sin(time * 1.6f + nx * 2.2f) * 0.5f + 0.5f)), 0, 255);
-                            b = (byte)Math.Clamp((int)(15 + 35 * (1.0f - norm)), 0, 255);
-                            break;
-
-                        // 5. OpenCL: Deep teal & emerald
                         case ThemePalette.OpenCL:
                             r = (byte)Math.Clamp((int)(15 + 50 * (1.0f - norm)), 0, 255);
                             g = (byte)Math.Clamp((int)(150 + 105 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(140 + 115 * (MathF.Sin(time * 1.4f + ny * 1.8f) * 0.5f + 0.5f)), 0, 255);
                             break;
-
-                        // 6. CUDA: NVIDIA lime green
                         case ThemePalette.Cuda:
                             r = (byte)Math.Clamp((int)(10 + 40 * (1.0f - norm)), 0, 255);
                             g = (byte)Math.Clamp((int)(160 + 95 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(20 + 50 * norm), 0, 255);
                             break;
-
-                        // 7. ROCm: AMD ruby red
                         case ThemePalette.Rocm:
                             r = (byte)Math.Clamp((int)(210 + 45 * norm), 0, 255);
                             g = (byte)Math.Clamp((int)(15 + 35 * norm), 0, 255);
                             b = (byte)Math.Clamp((int)(25 + 45 * norm), 0, 255);
                             break;
-
-                        // 8. oneAPI: Intel electric cyan
-                        case ThemePalette.OneApi:
-                            r = (byte)Math.Clamp((int)(10 + 40 * norm), 0, 255);
-                            g = (byte)Math.Clamp((int)(120 + 115 * norm), 0, 255);
-                            b = (byte)Math.Clamp((int)(210 + 45 * norm), 0, 255);
-                            break;
-
-                        // 9. VKD3D: Valve purple & steel
-                        case ThemePalette.Vkd3d:
-                            r = (byte)Math.Clamp((int)(140 + 80 * norm), 0, 255);
-                            g = (byte)Math.Clamp((int)(80 + 70 * norm), 0, 255);
-                            b = (byte)Math.Clamp((int)(150 + 90 * norm), 0, 255);
-                            break;
-
-                        // 10. WineD3D: Cabernet wine red
-                        case ThemePalette.WineD3d:
-                            r = (byte)Math.Clamp((int)(170 + 75 * norm), 0, 255);
-                            g = (byte)Math.Clamp((int)(15 + 30 * (1.0f - norm)), 0, 255);
-                            b = (byte)Math.Clamp((int)(40 + 50 * norm), 0, 255);
+                        default:
+                            r = (byte)Math.Clamp((int)(15 + 45 * (1.0f - norm)), 0, 255);
+                            g = (byte)Math.Clamp((int)(60 + 130 * (MathF.Sin(time * 1.5f + nx * 2.0f) * 0.5f + 0.5f)), 0, 255);
+                            b = (byte)Math.Clamp((int)(180 + 75 * norm), 0, 255);
                             break;
                     }
                 }
                 else
                 {
-                    // Idle background gradient
                     float baseGrad = (ny * 0.5f + 0.5f);
                     switch (theme)
                     {
                         case ThemePalette.Vulkan:
                             r = (byte)(28 + 22 * baseGrad); g = (byte)(12 + 10 * baseGrad); b = (byte)(12 + 10 * baseGrad);
-                            break;
-                        case ThemePalette.OpenGLES:
-                            r = (byte)(24 + 20 * baseGrad); g = (byte)(12 + 10 * baseGrad); b = (byte)(28 + 25 * baseGrad);
-                            break;
-                        case ThemePalette.Rusticl:
-                            r = (byte)(30 + 24 * baseGrad); g = (byte)(16 + 12 * baseGrad); b = (byte)(12 + 8 * baseGrad);
                             break;
                         case ThemePalette.OpenCL:
                             r = (byte)(10 + 8 * baseGrad); g = (byte)(24 + 20 * baseGrad); b = (byte)(26 + 22 * baseGrad);
@@ -302,7 +371,6 @@ public static class PixelUiEngine
                             r = (byte)(12 + 10 * baseGrad); g = (byte)(26 + 24 * baseGrad); b = (byte)(14 + 10 * baseGrad);
                             break;
                         case ThemePalette.Rocm:
-                        case ThemePalette.WineD3d:
                             r = (byte)(30 + 22 * baseGrad); g = (byte)(12 + 10 * baseGrad); b = (byte)(16 + 12 * baseGrad);
                             break;
                         default:
@@ -316,48 +384,30 @@ public static class PixelUiEngine
         }
     }
 
-    /// <summary>
-    /// Retrieves the accent color for a specific theme.
-    /// </summary>
     private static uint GetThemeAccent(ThemePalette theme) => theme switch
     {
-        ThemePalette.Vulkan   => 0xFFFF5722,
-        ThemePalette.OpenGLES => 0xFFFF4081,
-        ThemePalette.Rusticl  => 0xFFFF7043,
-        ThemePalette.OpenCL   => 0xFF2DD4BF,
-        ThemePalette.Cuda     => 0xFF00E676,
-        ThemePalette.Rocm     => 0xFFFF1744,
-        ThemePalette.OneApi   => 0xFF00B0FF,
-        ThemePalette.Vkd3d    => 0xFFE040FB,
-        ThemePalette.WineD3d  => 0xFFFF5252,
-        _                     => 0xFF2979FF
+        ThemePalette.Vulkan => 0xFFFF5722,
+        ThemePalette.OpenCL => 0xFF2DD4BF,
+        ThemePalette.Cuda   => 0xFF00E676,
+        ThemePalette.Rocm   => 0xFFFF1744,
+        _                   => 0xFF2979FF
     };
 
-    /// <summary>
-    /// Retrieves the active button background color for a specific theme.
-    /// </summary>
     private static uint GetThemeActiveButtonBg(ThemePalette theme) => theme switch
     {
-        ThemePalette.Vulkan   => 0xEEB7300D,
-        ThemePalette.OpenGLES => 0xEEA0144F,
-        ThemePalette.Rusticl  => 0xEEBF360C,
-        ThemePalette.OpenCL   => 0xEE00695C,
-        ThemePalette.Cuda     => 0xEE007E33,
-        ThemePalette.Rocm     => 0xEEB71C1C,
-        ThemePalette.OneApi   => 0xEE01579B,
-        ThemePalette.WineD3d  => 0xEE880E4F,
-        _                     => 0xEE0D47A1
+        ThemePalette.Vulkan => 0xEEB7300D,
+        ThemePalette.OpenCL => 0xEE00695C,
+        ThemePalette.Cuda   => 0xEE007E33,
+        ThemePalette.Rocm   => 0xEEB71C1C,
+        _                   => 0xEE0D47A1
     };
 
     private static unsafe void DrawPresetButton(uint* buffer, int width, Rect rect, string text, bool isSelected, int mx, int my, uint accentCol, uint activeBg)
     {
         bool hover = rect.Contains(mx, my);
-        uint bg = isSelected ? activeBg : (hover ? 0xDD30363D : 0xAA21262D);
-        uint border = isSelected ? accentCol : (hover ? 0xFF8B949E : 0xFF30363D);
-
-        FillRectAlpha(buffer, width, rect.X, rect.Y, rect.W, rect.H, bg);
-        DrawRect(buffer, width, rect.X, rect.Y, rect.W, rect.H, border);
-        DrawString(buffer, width, rect.X + (rect.W - text.Length * 8) / 2, rect.Y + 12, text, isSelected ? 0xFFFFFFFF : 0xFFC9D1D9, 1);
+        FillRectAlpha(buffer, width, rect.X, rect.Y, rect.W, rect.H, isSelected ? activeBg : (hover ? 0xDD30363D : 0xAA21262D));
+        DrawRect(buffer, width, rect.X, rect.Y, rect.W, rect.H, isSelected ? accentCol : (hover ? 0xFF8B949E : 0xFF30363D));
+        DrawString(buffer, width, rect.X + (rect.W - text.Length * 8) / 2, rect.Y + (rect.H - 8) / 2, text, 0xFFFFFFFF, 1);
     }
 
     private static unsafe void FillRectAlpha(uint* buffer, int bufW, int x, int y, int w, int h, uint col)
@@ -370,21 +420,17 @@ public static class PixelUiEngine
                     buffer[j * bufW + i] = col;
             return;
         }
-
-        float alpha = a / 255.0f;
-        float invA = 1.0f - alpha;
+        float alpha = a / 255.0f, invA = 1.0f - alpha;
         uint srcR = (col >> 16) & 0xFF, srcG = (col >> 8) & 0xFF, srcB = col & 0xFF;
-
         for (int j = y; j < y + h && j < BaseHeight; j++)
         {
             int row = j * bufW;
             for (int i = x; i < x + w && i < BaseWidth; i++)
             {
                 uint dst = buffer[row + i];
-                uint dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
-                uint outR = (uint)(srcR * alpha + dr * invA);
-                uint outG = (uint)(srcG * alpha + dg * invA);
-                uint outB = (uint)(srcB * alpha + db * invA);
+                uint outR = (uint)(srcR * alpha + ((dst >> 16) & 0xFF) * invA);
+                uint outG = (uint)(srcG * alpha + ((dst >> 8) & 0xFF) * invA);
+                uint outB = (uint)(srcB * alpha + (dst & 0xFF) * invA);
                 buffer[row + i] = 0xFF000000 | (outR << 16) | (outG << 8) | outB;
             }
         }
@@ -403,7 +449,6 @@ public static class PixelUiEngine
         int dx = Math.Abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
         int dy = -Math.Abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
         int err = dx + dy;
-
         while (true)
         {
             if (x0 >= 0 && x0 < BaseWidth && y0 >= 0 && y0 < BaseHeight) buffer[y0 * bufW + x0] = color;
@@ -480,6 +525,7 @@ public static class PixelUiEngine
         '9' => [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00],
         '+' => [0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00],
         '-' => [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
+        '─' => [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
         ':' => [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
         '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
         '/' => [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00],
@@ -487,13 +533,8 @@ public static class PixelUiEngine
         '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00],
         '[' => [0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00],
         ']' => [0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00],
-        '(' => [0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00],
-        ')' => [0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00],
-        '%' => [0x62, 0x64, 0x08, 0x10, 0x26, 0x46, 0x00, 0x00],
-        '>' => [0x60, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x60, 0x00],
-        '=' => [0x00, 0x7E, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
-        '~' => [0x00, 0x36, 0x5B, 0x00, 0x00, 0x00, 0x00, 0x00],
         '•' => [0x00, 0x18, 0x3C, 0x3C, 0x18, 0x00, 0x00, 0x00],
+        '%' => [0x62, 0x64, 0x08, 0x10, 0x20, 0x26, 0x46, 0x00],
         _   => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
     };
 }

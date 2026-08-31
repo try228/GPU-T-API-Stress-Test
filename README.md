@@ -44,19 +44,21 @@ dotnet publish -c Release -r linux-x64
 
 ### Options
 
-| Option                    | Description                                                                                                               |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `-b, --backend <api>`     | Target backend API. Default: `gl`.                                                                                        |
-| `-g, --gpu <index\|name>` | Target GPU by numeric index, such as `0` or `1`, or by a name/vendor substring, such as `amd`, `intel`, or `nvidia`.      |
-| `-d, --duration <sec>`    | Initial stress-test duration in seconds. Use `0` for unlimited duration.                                                  |
-| `-n, --native-d3d`        | Use the experimental lightweight native C Direct3D payload (`d3d_stress_native.exe`) instead of the managed .NET payload. |
-| `--list-gpus`             | Enumerate all detected GPU devices, including PCI IDs, and exit.                                                          |
-| `-h, --help`              | Display CLI usage information.                                                                                            |
+| Option                          | Description                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `-b, --backend <api>`           | Target backend API. Default: `gl`.                                                                                        |
+| `-g, --gpu <index\|name>`       | Target GPU by numeric index, such as `0` or `1`, or by a name/vendor substring, such as `amd`, `intel`, or `nvidia`.      |
+| `-d, --duration <sec>`          | Initial stress-test duration in seconds. Use `0` for unlimited duration.                                                  |
+| `-m, --mock-gpu <target>`       | Simulate a virtual GPU architecture profile: `nvidia` (RTX 5090), `intel` (Arc B580), `rdna3` (RX 7900 GRE), `pascal`.    |
+| `-n, --native-d3d`              | Use the experimental lightweight native C Direct3D payload (`d3d_stress_native.exe`) instead of the managed .NET payload. |
+| `--debug`, `-dbg`, `--vk-debug` | Enable Vulkan debug messenger (`VK_EXT_debug_utils`) colored callback logging in console.                                 |
+| `--list-gpus`                   | Enumerate all detected GPU devices, including PCI IDs, and exit.                                                          |
+| `-h, --help`                    | Display CLI usage information.                                                                                            |
 
 > **Note:** The backend can also be specified through the `API_backend` environment variable:
 >
 > ```bash
-> API_backend=cl ./GPU-T.StressTest
+> API_backend=vk ./GPU-T.StressTest
 > ```
 >
 > Command-line arguments take precedence over environment variables.
@@ -69,7 +71,7 @@ dotnet publish -c Release -r linux-x64
 | -------------------- | ----------------------------------------------------- |
 | `gl`, `opengl`       | Desktop OpenGL 3.3 Core — **Default**                 |
 | `gles`, `opengles`   | OpenGL ES 3.0                                         |
-| `vk`, `vulkan`       | Vulkan 1.0 baseline compute queue                     |
+| `vk`, `vulkan`       | Vulkan 1.0 Baseline Compute & Silicon Stress Matrix   |
 | `zink`               | Zink — OpenGL over Vulkan                             |
 | `zink_es`            | Zink — OpenGL ES over Vulkan                          |
 | `cl`, `opencl`       | OpenCL 1.2+ compute                                   |
@@ -94,6 +96,46 @@ dotnet publish -c Release -r linux-x64
 ---
 
 ## Notes & Architecture
+
+### Vulkan Stress Matrix & Silicon Telemetry
+
+The Vulkan backend (`vk`) features a comprehensive software rendering HUD and a customizable workload configuration matrix:
+
+* **Isolated Round-Robin Dispatch**: Multiple active workloads are executed using per-submit time multiplexing. This ensures heavy compute shaders (e.g. FP32) do not dilute memory latency or cache bandwidth measurements, presenting pure unpolluted hardware metrics simultaneously.
+* **Hardware-Accurate ALU Engines:**
+
+  * **FP32 Core FMA:** Standardized 4096 FLOPs/invocation compute kernel.
+  * **FP16 Packed Math:** 4096 FLOPs/invocation half-precision math.
+  * **FP64 Double Prec:** 2048 FLOPs/invocation 64-bit precision math.
+  * **INT32 / INT64 / INT16 / INT8:** Discrete integer ALU pipelines.
+  * **INT8 DP4A & INT16 DP2A:** Hardware dot product instructions (`OpSDotKHR`), executing natively on NVIDIA Turing/Ampere/Ada (`IDP2A`) and AMD RDNA (`V_DOT4` / `V_PK_MAD_I16` packed math).
+* **Adaptive Cache & Memory Probing:**
+
+  * **L1/L2 Cache Bandwidth:** Dynamically scales workgroup grids to fit 75% of the probed hardware L2 cache, measuring bidirectional cache throughput (TB/s) without flushing to VRAM.
+  * **L3 Infinity Cache:** Specifically probed for AMD discrete RDNA 2/3/4 (8 MB to 128 MB) and RDNA 3.5 Halo APUs (8040S, 8050S, 8060S, 8065S). Strictly disabled for GPUs without L3.
+  * **VRAM Stream Bandwidth:** Measures physical bus dataset throughput (GB/s) over a 128 MB allocation.
+  * **Memory Latency:** 1024-step serial pointer-chasing kernel measuring physical fabric transit latency (ns).
+
+### Vulkan Debugging & Validation
+
+Validation layers are decoupled from application binaries. To enable validation layer diagnostic interception, use standard Vulkan Loader environment variables combined with the `--debug` CLI flag:
+
+```bash
+# Run with Khronos validation layer and colorized console logging:
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ./GPU-T.StressTest -b vk --debug
+```
+
+When `--debug` (or `-dbg` / `--vk-debug`) is passed, the engine registers `VK_EXT_debug_utils` and prints color-coded warnings and error notifications directly to `stdout`.
+
+### Mock GPU Profiles
+
+To simulate hardware feature combinations (such as AMD Infinity Cache or NVIDIA Blackwell 128 MB L2) without physical hardware access, use `--mock-gpu`:
+
+```bash
+./GPU-T.StressTest -b vk -m nvidia   # Simulates RTX 5090 Blackwell profile
+./GPU-T.StressTest -b vk -m rdna3    # Simulates RX 7900 GRE RDNA 3 profile
+./GPU-T.StressTest -b vk -m intel    # Simulates Arc B580 Battlemage profile
+```
 
 ### Device Selection
 
