@@ -105,7 +105,7 @@ The Vulkan backend (`vk`) features a comprehensive software rendering HUD and a 
 * **Hardware-Accurate ALU Engines:**
 
   * **FP32 Core FMA:** Standardized 4096 FLOPs/invocation compute kernel.
-  * **FP16 Packed Math:** 4096 FLOPs/invocation half-precision math.
+  * **FP16/BF16 Packed Math:** 4096 FLOPs/invocation half-precision math.
   * **FP64 Double Prec:** 2048 FLOPs/invocation 64-bit precision math.
   * **INT32 / INT64 / INT16 / INT8:** Discrete integer ALU pipelines.
   * **INT8 DP4A & INT16 DP2A:** Hardware dot product instructions (`OpSDotKHR`), executing natively on NVIDIA Turing/Ampere/Ada (`IDP2A`) and AMD RDNA (`V_DOT4` / `V_PK_MAD_I16` packed math).

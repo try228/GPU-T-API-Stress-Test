@@ -17,7 +17,6 @@ namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
 /// High-performance native Vulkan compute stress test and silicon metric benchmark engine.
-/// Executes isolated per-workload dispatches to measure exact hardware throughput.
 /// </summary>
 public sealed unsafe class VulkanStressBenchmark : IDisposable
 {
@@ -27,21 +26,10 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
     private const nuint BufferSize = 128 * 1024 * 1024; // 128 MB SSBO
 
-    // Arithmetic operation counts per invocation matching SPIR-V ISA assembly
-    private const double FP32_OPS_PER_INVOCATION = 4096.0;
-    private const double FP16_RPM_OPS_PER_INVOCATION = 4096.0;
-    private const double FP64_OPS_PER_INVOCATION = 2048.0;
-    private const double INT32_OPS_PER_INVOCATION = 4096.0;
-    private const double INT64_OPS_PER_INVOCATION = 2048.0;
-    private const double INT16_OPS_PER_INVOCATION = 4096.0;
-    private const double INT8_ALU_OPS_PER_INVOCATION = 4096.0;
-    private const double DP4A_OPS_PER_INVOCATION = 18432.0;
-    private const double DP2A_OPS_PER_INVOCATION = 8192.0;
-
-    // Dynamically scaled workgroup grid sizes based on hardware cache probe
     private uint _wgAluAndL1;
     private uint _wgL3Cache;
     private uint _wgVramBus;
+    private uint _wgMatrix;
 
     private volatile bool _isBenchmarking = false;
     private volatile int _targetDurationSec = 0;
@@ -51,18 +39,19 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private bool _isSettingsOpen = false;
 
     private readonly Stopwatch _benchTimer = new();
-
     private ulong _totalSubmits = 0;
 
-    // Individual telemetry storage for isolated active workloads
     private readonly Dictionary<string, double> _liveTestDps = new();
-    private readonly List<string> _activeTestList = new();
+    private readonly Dictionary<string, ulong> _totalDispatchesByTest = new();
+    private readonly Dictionary<string, ulong> _lastDispatchesSnapshot = new();
+    private double _lastDpsMeasureTime = 0.0;
+
+    private volatile string[] _activeTestSnapshot = [];
 
     private int _mouseX = 0;
     private int _mouseY = 0;
 
     private Vk _vk = null!;
-
     private Instance _instance;
     private ulong _debugMessenger = 0;
 
@@ -73,14 +62,10 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private uint _computeQueueFamilyIndex;
 
     private string _deviceName = "Vulkan GPU";
-
     private readonly object _queueLock = new();
 
     private CommandPool _cmdPool;
-
-    // Dedicated command buffers for each independent compute test
     private readonly Dictionary<string, CommandBuffer[]> _testCmdBuffers = new();
-
     private readonly Fence[] _inFlightFences = new Fence[InFlightFrames];
 
     private DescriptorPool _descPool;
@@ -98,34 +83,38 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
     private CancellationTokenSource? _computeCts;
     private Thread? _computeThread;
-
-    private int _recordedDispatchesPerSubmit = 1;
+    private IInputContext? _inputContext;
 
     private readonly record struct WorkloadInfo(string Id, double OpsPerInvocation, string Unit);
 
     private static readonly Dictionary<string, WorkloadInfo> _workloads = new()
     {
-        ["alu_fp32"] = new("alu_fp32", FP32_OPS_PER_INVOCATION, "FLOP"),
-        ["alu_fp16"] = new("alu_fp16", FP16_RPM_OPS_PER_INVOCATION, "FLOP"),
-        ["alu_fp64"] = new("alu_fp64", FP64_OPS_PER_INVOCATION, "FLOP"),
-        ["alu_int32"] = new("alu_int32", INT32_OPS_PER_INVOCATION, "IOP"),
-        ["alu_int16"] = new("alu_int16", INT16_OPS_PER_INVOCATION, "IOP"),
-        ["alu_int64"] = new("alu_int64", INT64_OPS_PER_INVOCATION, "IOP"),
-        ["alu_int8"]  = new("alu_int8",  INT8_ALU_OPS_PER_INVOCATION, "IOP"),
-        ["alu_dp4a"]  = new("alu_dp4a",  DP4A_OPS_PER_INVOCATION, "IOP"),
-        ["alu_dp2a"]  = new("alu_dp2a",  DP2A_OPS_PER_INVOCATION, "IOP")
+        ["alu_fp32"] = new("alu_fp32", VulkanShaders.FP32_OPS_PER_INVOCATION, "FLOP"),
+        ["alu_fp16"] = new("alu_fp16", VulkanShaders.FP16_OPS_PER_INVOCATION, "FLOP"),
+        ["alu_bf16"] = new("alu_bf16", VulkanShaders.BF16_OPS_PER_INVOCATION, "FLOP"),
+        ["alu_fp64"] = new("alu_fp64", VulkanShaders.FP64_OPS_PER_INVOCATION, "FLOP"),
+        ["alu_int32"] = new("alu_int32", VulkanShaders.INT32_OPS_PER_INVOCATION, "IOP"),
+        ["alu_int16"] = new("alu_int16", VulkanShaders.INT16_OPS_PER_INVOCATION, "IOP"),
+        ["alu_int64"] = new("alu_int64", VulkanShaders.INT64_OPS_PER_INVOCATION, "IOP"),
+        ["alu_int8"]  = new("alu_int8",  VulkanShaders.INT8_OPS_PER_INVOCATION, "IOP"),
+        ["alu_dp4a"]  = new("alu_dp4a",  VulkanShaders.DP4A_OPS_PER_INVOCATION, "IOP"),
+        ["alu_dp2a"]  = new("alu_dp2a",  VulkanShaders.DP2A_OPS_PER_INVOCATION, "IOP"),
+        ["mat_fp16"]  = new("mat_fp16",  4096.0, "FLOP"),
+        ["mat_bf16"]  = new("mat_bf16",  4096.0, "FLOP"),
+        ["mat_int8"]  = new("mat_int8",  4096.0, "IOP")
     };
 
     private static int GetBatchCount(string id) => id switch
     {
-        "alu_fp32" or "alu_fp16" or "alu_int32" or "alu_int16" or "alu_int8" => 35,
-        "alu_dp4a" or "alu_dp2a" => 30,
-        "alu_fp64" or "alu_int64" => 4,
-        "mem_l1l2" => 128,
+        "alu_fp32" or "alu_fp16" or "alu_bf16" or "alu_int32" or "alu_int16" or "alu_int8" => 64,
+        "alu_dp4a" or "alu_dp2a" => 64,
+        "mat_fp16" or "mat_bf16" or "mat_int8" => 32,
+        "alu_fp64" or "alu_int64" => 16,
+        "mem_l1l2" => 64,
         "mem_l3"   => 32,
-        "mem_bw"   => 2,
+        "mem_bw"   => 8,
         "mem_lat"  => 1,
-        _ => 0
+        _ => 16
     };
 
     private bool HasPipelineFor(string id) => id switch
@@ -135,9 +124,6 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _ => _pipelines.ContainsKey(id)
     };
 
-    /// <summary>
-    /// Executes the Vulkan compute benchmark lifecycle with integrated OpenGL UI.
-    /// </summary>
     public static void Run(
         CancellationToken hostCt,
         int initialDuration = 0,
@@ -149,9 +135,6 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         benchmark.Execute(hostCt);
     }
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="VulkanStressBenchmark"/> class.
-    /// </summary>
     public VulkanStressBenchmark(
         int initialDuration = 0,
         int selectedGpuIndex = 0,
@@ -164,41 +147,18 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _targetDurationSec = initialDuration;
         _customInputBuffer = initialDuration > 0 ? initialDuration.ToString() : "";
 
-        InitializeVulkan(selectedGpuIndex, mockTarget, enableDebug);
-    }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static uint DebugCallback(
-        DebugUtilsMessageSeverityFlagsEXT severity,
-        DebugUtilsMessageTypeFlagsEXT types,
-        DebugUtilsMessengerCallbackDataEXT* pCallbackData,
-        void* pUserData)
-    {
-        string message = Marshal.PtrToStringAnsi((nint)pCallbackData->PMessage) ?? "";
-        ConsoleColor col = severity switch
-        {
-            DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt => ConsoleColor.Red,
-            DebugUtilsMessageSeverityFlagsEXT.WarningBitExt => ConsoleColor.Yellow,
-            DebugUtilsMessageSeverityFlagsEXT.InfoBitExt => ConsoleColor.Cyan,
-            _ => ConsoleColor.DarkGray
-        };
-        Console.ForegroundColor = col;
-        Console.WriteLine($"[Vulkan Validation] {severity}: {message}");
-        Console.ResetColor();
-        return Vk.False;
+        bool envHasValidation = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VK_INSTANCE_LAYERS"));
+        InitializeVulkan(selectedGpuIndex, mockTarget, enableDebug || envHasValidation);
     }
 
     private void InitializeVulkan(int selectedGpuIndex, MockGpuTarget mockTarget, bool enableDebug)
     {
         _vk = Vk.GetApi();
 
-        List<string> instExtensions = new() { "VK_KHR_get_physical_device_properties2" };
-        if (enableDebug)
-        {
-            instExtensions.Add("VK_EXT_debug_utils");
-        }
+        List<string> instExtensions = new();
+        if (enableDebug) instExtensions.Add("VK_EXT_debug_utils");
 
-        byte** ppInstExts = stackalloc byte*[instExtensions.Count];
+        byte** ppInstExts = stackalloc byte*[Math.Max(1, instExtensions.Count)];
         for (int i = 0; i < instExtensions.Count; i++)
             ppInstExts[i] = (byte*)SilkMarshal.StringToPtr(instExtensions[i]);
 
@@ -209,7 +169,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             ApplicationVersion = Vk.MakeVersion(1, 0, 0),
             PEngineName = (byte*)SilkMarshal.StringToPtr("GPU-T"),
             EngineVersion = Vk.MakeVersion(1, 0, 0),
-            ApiVersion = Vk.Version10
+            ApiVersion = Vk.Version11
         };
 
         InstanceCreateInfo instInfo = new()
@@ -217,7 +177,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             SType = StructureType.InstanceCreateInfo,
             PApplicationInfo = &appInfo,
             EnabledExtensionCount = (uint)instExtensions.Count,
-            PpEnabledExtensionNames = ppInstExts,
+            PpEnabledExtensionNames = instExtensions.Count > 0 ? ppInstExts : null,
             EnabledLayerCount = 0,
             PpEnabledLayerNames = null
         };
@@ -227,46 +187,27 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             throw new InvalidOperationException($"Failed to create Vulkan Instance: {instRes}");
 
         for (int i = 0; i < instExtensions.Count; i++) SilkMarshal.Free((nint)ppInstExts[i]);
-
-        if (enableDebug)
-        {
-            VkDebugUtilsMessengerCreateInfoEXT dbgInfo = new()
-            {
-                sType = StructureType.DebugUtilsMessengerCreateInfoExt,
-                messageSeverity = DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt | DebugUtilsMessageSeverityFlagsEXT.WarningBitExt | DebugUtilsMessageSeverityFlagsEXT.InfoBitExt,
-                messageType = DebugUtilsMessageTypeFlagsEXT.GeneralBitExt | DebugUtilsMessageTypeFlagsEXT.ValidationBitExt | DebugUtilsMessageTypeFlagsEXT.PerformanceBitExt,
-                pfnUserCallback = &DebugCallback
-            };
-
-            nint pCreateFn = SilkMarshal.StringToPtr("vkCreateDebugUtilsMessengerEXT");
-            var pfnCreate = (delegate* unmanaged[Cdecl]<Instance, VkDebugUtilsMessengerCreateInfoEXT*, AllocationCallbacks*, ulong*, Result>)(void*)_vk.GetInstanceProcAddr(_instance, (byte*)pCreateFn);
-            SilkMarshal.Free(pCreateFn);
-
-            if (pfnCreate != null)
-            {
-                ulong messenger = 0;
-                pfnCreate(_instance, &dbgInfo, null, &messenger);
-                _debugMessenger = messenger;
-            }
-        }
+        SilkMarshal.Free((nint)appInfo.PApplicationName);
+        SilkMarshal.Free((nint)appInfo.PEngineName);
 
         uint devCount = 0;
         _vk.EnumeratePhysicalDevices(_instance, &devCount, null);
         if (devCount == 0) throw new InvalidOperationException("No Vulkan physical devices found.");
 
         PhysicalDevice* pDevs = stackalloc PhysicalDevice[(int)devCount];
+        Unsafe.InitBlock(pDevs, 0, (uint)(sizeof(PhysicalDevice) * devCount));
         _vk.EnumeratePhysicalDevices(_instance, &devCount, pDevs);
 
         int gpuIdx = Math.Clamp(selectedGpuIndex, 0, (int)devCount - 1);
         _physicalDevice = pDevs[gpuIdx];
 
-        _capabilityProbe = new VulkanCapabilityProbe(_vk, _physicalDevice, mockTarget);
+        _capabilityProbe = new VulkanCapabilityProbe(_vk, _physicalDevice, _instance, mockTarget);
         _testRegistry = new VulkanTestRegistry(_capabilityProbe);
         _deviceName = _capabilityProbe.DeviceName;
 
-        // Dynamic workgroup grid configuration based on probed hardware cache hierarchy
         uint l2Bytes = _capabilityProbe.L2CacheSizeBytes;
         _wgAluAndL1 = Math.Clamp((uint)((l2Bytes * 0.75) / 256), 2048, 65536);
+        _wgMatrix = Math.Clamp(_wgAluAndL1 / 2, 2048, 16384);
 
         if (_capabilityProbe.HasL3InfinityCache)
         {
@@ -283,6 +224,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         uint qfCount = 0;
         _vk.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &qfCount, null);
         QueueFamilyProperties* pQf = stackalloc QueueFamilyProperties[(int)qfCount];
+        Unsafe.InitBlock(pQf, 0, (uint)(sizeof(QueueFamilyProperties) * qfCount));
         _vk.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &qfCount, pQf);
 
         bool foundComputeQueue = false;
@@ -303,6 +245,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         BufferCreateInfo bufInfo = new()
         {
             SType = StructureType.BufferCreateInfo,
+            PNext = null,
             Size = BufferSize,
             Usage = BufferUsageFlags.StorageBufferBit,
             SharingMode = SharingMode.Exclusive
@@ -332,6 +275,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         MemoryAllocateInfo allocInfo = new()
         {
             SType = StructureType.MemoryAllocateInfo,
+            PNext = null,
             AllocationSize = memReqs.Size,
             MemoryTypeIndex = memTypeIdx
         };
@@ -350,6 +294,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         DescriptorSetLayoutCreateInfo dslInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
+            PNext = null,
             BindingCount = 1,
             PBindings = &binding
         };
@@ -360,6 +305,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         PipelineLayoutCreateInfo plInfo = new()
         {
             SType = StructureType.PipelineLayoutCreateInfo,
+            PNext = null,
             SetLayoutCount = 1,
             PSetLayouts = &dsl
         };
@@ -370,6 +316,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         DescriptorPoolCreateInfo dpInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
+            PNext = null,
             MaxSets = 1,
             PoolSizeCount = 1,
             PPoolSizes = &poolSize
@@ -380,6 +327,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         DescriptorSetAllocateInfo dsAlloc = new()
         {
             SType = StructureType.DescriptorSetAllocateInfo,
+            PNext = null,
             DescriptorPool = _descPool,
             DescriptorSetCount = 1,
             PSetLayouts = &dsl
@@ -395,6 +343,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         WriteDescriptorSet writeDs = new()
         {
             SType = StructureType.WriteDescriptorSet,
+            PNext = null,
             DstSet = ds,
             DstBinding = 0,
             DescriptorType = DescriptorType.StorageBuffer,
@@ -409,6 +358,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         CommandPoolCreateInfo cpInfo = new()
         {
             SType = StructureType.CommandPoolCreateInfo,
+            PNext = null,
             QueueFamilyIndex = _computeQueueFamilyIndex,
             Flags = CommandPoolCreateFlags.ResetCommandBufferBit
         };
@@ -417,7 +367,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         for (int i = 0; i < InFlightFrames; i++)
         {
-            FenceCreateInfo fenceInfo = new() { SType = StructureType.FenceCreateInfo, Flags = FenceCreateFlags.SignaledBit };
+            FenceCreateInfo fenceInfo = new() { SType = StructureType.FenceCreateInfo, PNext = null, Flags = FenceCreateFlags.SignaledBit };
             _vk.CreateFence(_device, &fenceInfo, null, out _inFlightFences[i]);
         }
     }
@@ -425,43 +375,59 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private void InitializeLogicalDevice()
     {
         List<string> devExtensions = new();
-        PhysicalDeviceFeatures coreFeatures = new()
-        {
-            ShaderFloat64 = _capabilityProbe.HasFloat64,
-            ShaderInt64 = _capabilityProbe.HasInt64,
-            ShaderInt16 = _capabilityProbe.HasInt16
-        };
-
         void* pNextChain = null;
 
-        PhysicalDeviceShaderFloat16Int8FeaturesKHR float16Features = new()
-        {
-            SType = VulkanConstants.StructureTypePhysicalDeviceShaderFloat16Int8FeaturesKHR,
-            ShaderFloat16 = _capabilityProbe.HasFloat16,
-            ShaderInt8 = _capabilityProbe.HasInt8
-        };
+        VkPhysicalDeviceShaderFloat16Int8FeaturesKHR float16Features = default;
+        float16Features.sType = VulkanConstants.StructureTypePhysicalDeviceShaderFloat16Int8FeaturesKHR;
+        float16Features.shaderFloat16 = _capabilityProbe.HasFloat16 ? 1u : 0u;
+        float16Features.shaderInt8 = _capabilityProbe.HasInt8 ? 1u : 0u;
 
         if (_capabilityProbe.HasFloat16 || _capabilityProbe.HasInt8)
         {
             devExtensions.Add("VK_KHR_shader_float16_int8");
-            float16Features.PNext = pNextChain;
+            float16Features.pNext = pNextChain;
             pNextChain = &float16Features;
         }
 
-        PhysicalDeviceShaderIntegerDotProductFeaturesKHR dotProductFeatures = new()
-        {
-            SType = VulkanConstants.StructureTypePhysicalDeviceShaderIntegerDotProductFeaturesKHR,
-            ShaderIntegerDotProduct = _capabilityProbe.HasIntegerDotProduct
-        };
+        VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR dotFeatures = default;
+        dotFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceShaderIntegerDotProductFeaturesKHR;
+        dotFeatures.shaderIntegerDotProduct = _capabilityProbe.HasIntegerDotProduct ? 1u : 0u;
 
         if (_capabilityProbe.HasIntegerDotProduct)
         {
             devExtensions.Add("VK_KHR_shader_integer_dot_product");
-            dotProductFeatures.PNext = pNextChain;
-            pNextChain = &dotProductFeatures;
+            dotFeatures.pNext = pNextChain;
+            pNextChain = &dotFeatures;
         }
 
-        byte** ppDevExts = stackalloc byte*[devExtensions.Count];
+        VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16Features = default;
+        bf16Features.sType = VulkanConstants.StructureTypePhysicalDeviceShaderBfloat16FeaturesKHR;
+
+        if (_capabilityProbe.HasBFloat16Extension)
+        {
+            PhysicalDeviceFeatures2 queryFeat2 = new()
+            {
+                SType = StructureType.PhysicalDeviceFeatures2,
+                PNext = &bf16Features
+            };
+            _vk.GetPhysicalDeviceFeatures2(_physicalDevice, &queryFeat2);
+
+            if (bf16Features.shaderBFloat16Type != 0)
+            {
+                bf16Features.pNext = pNextChain;
+                pNextChain = &bf16Features;
+                devExtensions.Add("VK_KHR_shader_bfloat16");
+            }
+        }
+
+        VkPhysicalDeviceFeatures2KHR feat2 = default;
+        feat2.sType = VulkanConstants.StructureTypePhysicalDeviceFeatures2KHR;
+        feat2.features.ShaderFloat64 = _capabilityProbe.HasFloat64;
+        feat2.features.ShaderInt64 = _capabilityProbe.HasInt64;
+        feat2.features.ShaderInt16 = _capabilityProbe.HasInt16;
+        feat2.pNext = pNextChain;
+
+        byte** ppDevExts = stackalloc byte*[Math.Max(1, devExtensions.Count)];
         for (int i = 0; i < devExtensions.Count; i++)
             ppDevExts[i] = (byte*)SilkMarshal.StringToPtr(devExtensions[i]);
 
@@ -469,6 +435,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         DeviceQueueCreateInfo qInfo = new()
         {
             SType = StructureType.DeviceQueueCreateInfo,
+            PNext = null,
             QueueFamilyIndex = _computeQueueFamilyIndex,
             QueueCount = 1,
             PQueuePriorities = &qPri
@@ -477,19 +444,20 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         DeviceCreateInfo devInfo = new()
         {
             SType = StructureType.DeviceCreateInfo,
-            PNext = pNextChain,
+            PNext = &feat2,
             QueueCreateInfoCount = 1,
             PQueueCreateInfos = &qInfo,
             EnabledExtensionCount = (uint)devExtensions.Count,
-            PpEnabledExtensionNames = ppDevExts,
-            PEnabledFeatures = &coreFeatures
+            PpEnabledExtensionNames = devExtensions.Count > 0 ? ppDevExts : null,
+            PEnabledFeatures = null
         };
 
         Result devRes = _vk.CreateDevice(_physicalDevice, &devInfo, null, out _device);
         if (devRes != Result.Success)
             throw new InvalidOperationException($"Failed to create Vulkan Device: {devRes}");
 
-        for (int i = 0; i < devExtensions.Count; i++) SilkMarshal.Free((nint)ppDevExts[i]);
+        for (int i = 0; i < devExtensions.Count; i++)
+            SilkMarshal.Free((nint)ppDevExts[i]);
 
         _vk.GetDeviceQueue(_device, _computeQueueFamilyIndex, 0, out _computeQueue);
     }
@@ -497,11 +465,14 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private Pipeline CreateComputePipeline(uint[] spirvCode, out ShaderModule shaderModule)
     {
         shaderModule = default;
+        if (spirvCode == null || spirvCode.Length == 0) return default;
+
         fixed (uint* pCode = spirvCode)
         {
             ShaderModuleCreateInfo smInfo = new()
             {
                 SType = StructureType.ShaderModuleCreateInfo,
+                PNext = null,
                 CodeSize = (nuint)(spirvCode.Length * sizeof(uint)),
                 PCode = pCode
             };
@@ -510,78 +481,91 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             if (res != Result.Success) return default;
         }
 
-        nint pMain = SilkMarshal.StringToPtr("main");
+        byte* pMain = stackalloc byte[] { (byte)'m', (byte)'a', (byte)'i', (byte)'n', 0 };
         PipelineShaderStageCreateInfo stageInfo = new()
         {
             SType = StructureType.PipelineShaderStageCreateInfo,
+            PNext = null,
             Stage = ShaderStageFlags.ComputeBit,
             Module = shaderModule,
-            PName = (byte*)pMain
+            PName = pMain,
+            Flags = 0
         };
 
         ComputePipelineCreateInfo pipeInfo = new()
         {
             SType = StructureType.ComputePipelineCreateInfo,
+            PNext = null,
             Stage = stageInfo,
-            Layout = _pipeLayout
+            Layout = _pipeLayout,
+            Flags = 0,
+            BasePipelineHandle = default,
+            BasePipelineIndex = -1
         };
 
-        Pipeline pipeline;
+        Pipeline pipeline = default;
         Result pipeRes = _vk.CreateComputePipelines(_device, default, 1, &pipeInfo, null, &pipeline);
-        SilkMarshal.Free(pMain);
 
-        if (pipeRes != Result.Success) return default;
+        if (pipeRes != Result.Success)
+        {
+            if (shaderModule.Handle != 0)
+            {
+                _vk.DestroyShaderModule(_device, shaderModule, null);
+                shaderModule = default;
+            }
+            return default;
+        }
+
         return pipeline;
+    }
+
+    private void SafeRegisterPipeline(string id, uint[] spirv)
+    {
+        try
+        {
+            var p = CreateComputePipeline(spirv, out var sm);
+            if (p.Handle != 0) _pipelines[id] = (p, sm);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Vulkan] Skipping pipeline '{id}': {ex.Message}");
+        }
     }
 
     private void InitializePipelines()
     {
-        _pipelines["alu_fp32"] = (CreateComputePipeline(VulkanShaders.GetShaderFP32(), out var smFp32), smFp32);
-        _pipelines["alu_int32"] = (CreateComputePipeline(VulkanShaders.GetShaderINT32(), out var smInt32), smInt32);
-        _pipelines["mem_stream"] = (CreateComputePipeline(VulkanShaders.GetShaderMem(), out var smMem), smMem);
-        _pipelines["mem_lat"] = (CreateComputePipeline(VulkanShaders.GetShaderLatency(), out var smLat), smLat);
+        SafeRegisterPipeline("alu_fp32", VulkanShaders.GetShaderFP32());
+        SafeRegisterPipeline("alu_int32", VulkanShaders.GetShaderINT32());
+        SafeRegisterPipeline("mem_stream", VulkanShaders.GetShaderMem());
+        SafeRegisterPipeline("mem_lat", VulkanShaders.GetShaderLatency());
 
         if (_capabilityProbe.HasFloat64)
-        {
-            var p = CreateComputePipeline(VulkanShaders.GetShaderFP64(), out var smFp64);
-            if (p.Handle != 0) _pipelines["alu_fp64"] = (p, smFp64);
-        }
+            SafeRegisterPipeline("alu_fp64", VulkanShaders.GetShaderFP64());
 
         if (_capabilityProbe.HasInt64)
-        {
-            var p = CreateComputePipeline(VulkanShaders.GetShaderINT64(), out var smInt64);
-            if (p.Handle != 0) _pipelines["alu_int64"] = (p, smInt64);
-        }
+            SafeRegisterPipeline("alu_int64", VulkanShaders.GetShaderINT64());
 
         if (_capabilityProbe.HasFloat16)
-        {
-            var p = CreateComputePipeline(VulkanShaders.GetShaderFP16(), out var smFp16);
-            if (p.Handle != 0) _pipelines["alu_fp16"] = (p, smFp16);
-        }
+            SafeRegisterPipeline("alu_fp16", VulkanShaders.GetShaderFP16());
+
+        SafeRegisterPipeline("alu_bf16", VulkanShaders.GetShaderBF16(_capabilityProbe));
 
         if (_capabilityProbe.HasInt16)
-        {
-            var p = CreateComputePipeline(VulkanShaders.GetShaderINT16(), out var smInt16);
-            if (p.Handle != 0) _pipelines["alu_int16"] = (p, smInt16);
-        }
+            SafeRegisterPipeline("alu_int16", VulkanShaders.GetShaderINT16());
 
         if (_capabilityProbe.HasInt8)
-        {
-            var p = CreateComputePipeline(VulkanShaders.GetShaderINT8(), out var smInt8);
-            if (p.Handle != 0) _pipelines["alu_int8"] = (p, smInt8);
-        }
+            SafeRegisterPipeline("alu_int8", VulkanShaders.GetShaderINT8());
 
         if (_capabilityProbe.HasIntegerDotProduct)
         {
-            var pDp4 = CreateComputePipeline(VulkanShaders.GetShaderDP4A(), out var smDp4a);
-            if (pDp4.Handle != 0) _pipelines["alu_dp4a"] = (pDp4, smDp4a);
-
+            SafeRegisterPipeline("alu_dp4a", VulkanShaders.GetShaderDP4A());
             if (_capabilityProbe.HasInt16)
-            {
-                var pDp2 = CreateComputePipeline(VulkanShaders.GetShaderDP2A(), out var smDp2a);
-                if (pDp2.Handle != 0) _pipelines["alu_dp2a"] = (pDp2, smDp2a);
-            }
+                SafeRegisterPipeline("alu_dp2a", VulkanShaders.GetShaderDP2A());
         }
+
+        SafeRegisterPipeline("mat_fp16", VulkanShaders.GetShaderMatFP16());
+        SafeRegisterPipeline("mat_bf16", VulkanShaders.GetShaderMatBF16());
+        SafeRegisterPipeline("mat_int8", VulkanShaders.GetShaderMatINT8());
     }
 
     private void DispatchLinear(CommandBuffer cb, uint totalWorkGroups)
@@ -602,22 +586,23 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
     private void RecordCommandBuffers()
     {
-        _activeTestList.Clear();
+        var activeList = new List<string>();
         foreach (var item in _testRegistry.Items)
         {
             if (item.IsChecked && item.IsSupported && HasPipelineFor(item.Id))
             {
                 if (item.Id == "mem_l3" && !_capabilityProbe.HasL3InfinityCache) continue;
-                _activeTestList.Add(item.Id);
+                activeList.Add(item.Id);
             }
         }
 
-        if (_activeTestList.Count == 0) return;
+        _activeTestSnapshot = activeList.ToArray();
+        if (_activeTestSnapshot.Length == 0) return;
 
-        CommandBufferBeginInfo cbBegin = new() { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.SimultaneousUseBit };
+        CommandBufferBeginInfo cbBegin = new() { SType = StructureType.CommandBufferBeginInfo, PNext = null, Flags = CommandBufferUsageFlags.SimultaneousUseBit };
         var ds = _descSet;
 
-        foreach (var testId in _activeTestList)
+        foreach (var testId in _activeTestSnapshot)
         {
             if (!_testCmdBuffers.TryGetValue(testId, out var buffers))
             {
@@ -625,6 +610,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 CommandBufferAllocateInfo cbAlloc = new()
                 {
                     SType = StructureType.CommandBufferAllocateInfo,
+                    PNext = null,
                     CommandPool = _cmdPool,
                     Level = CommandBufferLevel.Primary,
                     CommandBufferCount = 1
@@ -649,6 +635,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 "mem_l3" => _wgL3Cache,
                 "mem_bw" => _wgVramBus,
                 "mem_lat" => 1024,
+                "mat_fp16" or "mat_bf16" or "mat_int8" => _wgMatrix,
                 _ => _wgAluAndL1
             };
 
@@ -668,10 +655,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private double GetWorkloadTops(string id, double dispatchesPerSecond)
     {
         if (!_workloads.TryGetValue(id, out var workload)) return 0.0;
-        double totalInvocationsPerDispatch = _wgAluAndL1 * VulkanShaders.LocalSizeX;
+        
+        uint wgCount = id.StartsWith("mat_") ? _wgMatrix : _wgAluAndL1;
+        double totalInvocationsPerDispatch = wgCount * VulkanShaders.LocalSizeX;
         double operationsPerDispatch = workload.OpsPerInvocation * totalInvocationsPerDispatch;
-        double operationsPerSecond = dispatchesPerSecond * operationsPerDispatch;
-        return operationsPerSecond / 1e12;
+        return (dispatchesPerSecond * operationsPerDispatch) / 1e12;
     }
 
     private void Execute(CancellationToken hostCt)
@@ -681,20 +669,22 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _computeThread = new Thread(() =>
         {
             int testIdx = 0;
+            int burstCounter = 0;
+            const int BurstsPerTest = 8;
+
+            string[] frameTestId = new string[InFlightFrames];
             int frameIndex = 0;
-            long lastTimestamp = Stopwatch.GetTimestamp();
 
             while (!_computeCts.Token.IsCancellationRequested)
             {
-                if (!_isBenchmarking || _activeTestList.Count == 0)
+                var currentTests = _activeTestSnapshot;
+                if (!_isBenchmarking || currentTests.Length == 0)
                 {
-                    Thread.Sleep(20);
-                    lastTimestamp = Stopwatch.GetTimestamp();
+                    Thread.Sleep(10);
+                    Array.Clear(frameTestId);
+                    burstCounter = 0;
                     continue;
                 }
-
-                string currentTest = _activeTestList[testIdx % _activeTestList.Count];
-                testIdx++;
 
                 lock (_queueLock)
                 {
@@ -702,32 +692,46 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                     _vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue);
                     _vk.ResetFences(_device, 1, &fence);
 
-                    long now = Stopwatch.GetTimestamp();
-                    double elapsedSec = Math.Max(0.000001, (double)(now - lastTimestamp) / Stopwatch.Frequency);
-                    lastTimestamp = now;
+                    string completedTest = frameTestId[frameIndex];
 
-                    var scb = _testCmdBuffers[currentTest][frameIndex];
-                    SubmitInfo stressSubmit = new()
+                    // Учитываем честно выполненный батч диспатчей
+                    if (!string.IsNullOrEmpty(completedTest))
                     {
-                        SType = StructureType.SubmitInfo,
-                        CommandBufferCount = 1,
-                        PCommandBuffers = &scb
-                    };
-
-                    Result submitResult = _vk.QueueSubmit(_computeQueue, 1, &stressSubmit, fence);
-                    if (submitResult == Result.Success)
-                    {
-                        Interlocked.Increment(ref _totalSubmits);
-
-                        int batch = GetBatchCount(currentTest);
-                        double instDps = batch / elapsedSec;
-
-                        lock (_liveTestDps)
+                        int batch = GetBatchCount(completedTest);
+                        lock (_totalDispatchesByTest)
                         {
-                            if (_liveTestDps.TryGetValue(currentTest, out double prev) && prev > 0)
-                                _liveTestDps[currentTest] = prev * 0.85 + instDps * 0.15;
-                            else
-                                _liveTestDps[currentTest] = instDps;
+                            _totalDispatchesByTest[completedTest] = _totalDispatchesByTest.GetValueOrDefault(completedTest) + (ulong)batch;
+                        }
+                    }
+
+                    if (currentTests.Length > 0)
+                    {
+                        string nextTest = currentTests[testIdx % currentTests.Length];
+                        burstCounter++;
+                        if (burstCounter >= BurstsPerTest)
+                        {
+                            burstCounter = 0;
+                            testIdx++;
+                        }
+
+                        if (_testCmdBuffers.TryGetValue(nextTest, out var cbs))
+                        {
+                            var scb = cbs[frameIndex];
+                            SubmitInfo stressSubmit = new()
+                            {
+                                SType = StructureType.SubmitInfo,
+                                PNext = null,
+                                CommandBufferCount = 1,
+                                PCommandBuffers = &scb
+                            };
+
+                            frameTestId[frameIndex] = nextTest;
+
+                            Result submitResult = _vk.QueueSubmit(_computeQueue, 1, &stressSubmit, fence);
+                            if (submitResult == Result.Success)
+                            {
+                                Interlocked.Increment(ref _totalSubmits);
+                            }
                         }
                     }
 
@@ -737,7 +741,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         })
         {
             IsBackground = true,
-            Priority = ThreadPriority.Highest
+            Priority = ThreadPriority.Normal
         };
 
         _computeThread.Start();
@@ -784,15 +788,15 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             uiProgram = CreateGlProgram(gl, vsSource, fsSource);
             gl.UseProgram(uiProgram);
 
-            float[] quadVertices =
-            [
+            float[] quadVertices = new float[]
+            {
                 -1.0f, -1.0f, 0.0f, 1.0f,
                  1.0f, -1.0f, 1.0f, 1.0f,
                  1.0f,  1.0f, 1.0f, 0.0f,
                 -1.0f, -1.0f, 0.0f, 1.0f,
                  1.0f,  1.0f, 1.0f, 0.0f,
                 -1.0f,  1.0f, 0.0f, 0.0f
-            ];
+            };
 
             vao = gl.GenVertexArray();
             vbo = gl.GenBuffer();
@@ -816,13 +820,13 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
             gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8, (uint)WinWidth, (uint)WinHeight, 0, PixelFormat.Bgra, PixelType.UnsignedByte, (void*)0);
 
-            IInputContext input = window.CreateInput();
-            foreach (var mouse in input.Mice)
+            _inputContext = window.CreateInput();
+            foreach (var mouse in _inputContext.Mice)
             {
                 mouse.MouseMove += (m, pos) => { _mouseX = (int)pos.X; _mouseY = (int)pos.Y; };
                 mouse.MouseDown += (m, btn) => { if (btn == MouseButton.Left) HandleMouseClick(_mouseX, _mouseY); };
             }
-            foreach (var kb in input.Keyboards)
+            foreach (var kb in _inputContext.Keyboards)
             {
                 kb.KeyDown += (k, key, code) =>
                 {
@@ -848,6 +852,28 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
             double elapsed = _isBenchmarking ? _benchTimer.Elapsed.TotalSeconds : 0.0;
 
+            // Расчет DPS на скользящем окне 250 мс
+            double nowSec = _benchTimer.Elapsed.TotalSeconds;
+            double dt = nowSec - _lastDpsMeasureTime;
+            if (_isBenchmarking && dt >= 0.25)
+            {
+                lock (_totalDispatchesByTest)
+                {
+                    foreach (var kvp in _totalDispatchesByTest)
+                    {
+                        ulong current = kvp.Value;
+                        ulong prev = _lastDispatchesSnapshot.TryGetValue(kvp.Key, out var val) ? val : 0;
+                        double dps = (current - prev) / dt;
+                        lock (_liveTestDps)
+                        {
+                            _liveTestDps[kvp.Key] = dps;
+                        }
+                        _lastDispatchesSnapshot[kvp.Key] = current;
+                    }
+                }
+                _lastDpsMeasureTime = nowSec;
+            }
+
             double GetDps(string id)
             {
                 if (!_isBenchmarking) return 0.0;
@@ -859,26 +885,28 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
             double fp32Tflops = _testRegistry.IsActive("alu_fp32") ? GetWorkloadTops("alu_fp32", GetDps("alu_fp32")) : 0.0;
             double fp16Tflops = _testRegistry.IsActive("alu_fp16") ? GetWorkloadTops("alu_fp16", GetDps("alu_fp16")) : 0.0;
+            double bf16Tflops = _testRegistry.IsActive("alu_bf16") ? GetWorkloadTops("alu_bf16", GetDps("alu_bf16")) : 0.0;
             double fp64Tflops = _testRegistry.IsActive("alu_fp64") ? GetWorkloadTops("alu_fp64", GetDps("alu_fp64")) : 0.0;
             double int32Tiops = _testRegistry.IsActive("alu_int32") ? GetWorkloadTops("alu_int32", GetDps("alu_int32")) : 0.0;
             double int16Tiops = _testRegistry.IsActive("alu_int16") ? GetWorkloadTops("alu_int16", GetDps("alu_int16")) : 0.0;
             double int64Tiops = _testRegistry.IsActive("alu_int64") ? GetWorkloadTops("alu_int64", GetDps("alu_int64")) : 0.0;
-            double int8Tiops =  _testRegistry.IsActive("alu_int8")  ? GetWorkloadTops("alu_int8", GetDps("alu_int8")) : 0.0;
-            double dp4aTops =   _testRegistry.IsActive("alu_dp4a")  ? GetWorkloadTops("alu_dp4a", GetDps("alu_dp4a")) : 0.0;
-            double dp2aTops =   _testRegistry.IsActive("alu_dp2a")  ? GetWorkloadTops("alu_dp2a", GetDps("alu_dp2a")) : 0.0;
+            double int8Tiops  = _testRegistry.IsActive("alu_int8")  ? GetWorkloadTops("alu_int8", GetDps("alu_int8")) : 0.0;
+            double dp4aTops   = _testRegistry.IsActive("alu_dp4a")  ? GetWorkloadTops("alu_dp4a", GetDps("alu_dp4a")) : 0.0;
+            double dp2aTops   = _testRegistry.IsActive("alu_dp2a")  ? GetWorkloadTops("alu_dp2a", GetDps("alu_dp2a")) : 0.0;
+
+            double matFp16Tops = _testRegistry.IsActive("mat_fp16") ? GetWorkloadTops("mat_fp16", GetDps("mat_fp16")) : 0.0;
+            double matBf16Tops = _testRegistry.IsActive("mat_bf16") ? GetWorkloadTops("mat_bf16", GetDps("mat_bf16")) : 0.0;
+            double matInt8Tops = _testRegistry.IsActive("mat_int8") ? GetWorkloadTops("mat_int8", GetDps("mat_int8")) : 0.0;
 
             double displayedTops = 0.0;
-            if (_testRegistry.IsActive("alu_fp32")) displayedTops = fp32Tflops;
+            if (_testRegistry.IsActive("mat_fp16")) displayedTops = matFp16Tops;
+            else if (_testRegistry.IsActive("mat_bf16")) displayedTops = matBf16Tops;
+            else if (_testRegistry.IsActive("mat_int8")) displayedTops = matInt8Tops;
+            else if (_testRegistry.IsActive("alu_fp32")) displayedTops = fp32Tflops;
             else if (_testRegistry.IsActive("alu_fp16")) displayedTops = fp16Tflops;
-            else if (_testRegistry.IsActive("alu_fp64")) displayedTops = fp64Tflops;
-            else if (_testRegistry.IsActive("alu_int32")) displayedTops = int32Tiops;
-            else if (_testRegistry.IsActive("alu_int16")) displayedTops = int16Tiops;
-            else if (_testRegistry.IsActive("alu_int64")) displayedTops = int64Tiops;
+            else if (_testRegistry.IsActive("alu_bf16")) displayedTops = bf16Tflops;
             else if (_testRegistry.IsActive("alu_dp4a")) displayedTops = dp4aTops;
-            else if (_testRegistry.IsActive("alu_dp2a")) displayedTops = dp2aTops;
-            else if (_testRegistry.IsActive("alu_int8")) displayedTops = int8Tiops;
 
-            // Physical bandwidth calculation
             double l1l2BytesPerDispatch = _wgAluAndL1 * 512.0;
             double cacheL1L2Tbs = (_testRegistry.IsActive("mem_l1l2") && HasPipelineFor("mem_l1l2"))
                 ? (GetDps("mem_l1l2") * l1l2BytesPerDispatch) / 1_000_000_000_000.0
@@ -908,38 +936,13 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             fixed (uint* pUi = uiPixels)
             {
                 PixelUiEngine.Render(
-                    pUi,
-                    WinWidth,
-                    WinHeight,
-                    "Vulkan 1.0 Compute",
-                    _deviceName,
-                    _isBenchmarking,
-                    _targetDurationSec,
-                    _customInputBuffer,
-                    _isCustomFocused,
-                    elapsed,
-                    totalActiveDps,
-                    displayedTops,
-                    null,
-                    ThemePalette.Vulkan,
-                    _mouseX,
-                    _mouseY,
-                    animTime,
-                    _isSettingsOpen,
-                    _testRegistry,
-                    fp32Tflops,
-                    fp64Tflops,
-                    fp16Tflops,
-                    int32Tiops,
-                    int64Tiops,
-                    int16Tiops,
-                    dp4aTops > 0 ? dp4aTops : int8Tiops,
-                    dp2aTops,
-                    0.0,
-                    memBandwidthGbs,
-                    cacheL1L2Tbs,
-                    cacheL3Tbs,
-                    latencyNs);
+                    pUi, WinWidth, WinHeight,
+                    "Vulkan 1.0 Compute", _deviceName, _isBenchmarking, _targetDurationSec,
+                    _customInputBuffer, _isCustomFocused, elapsed, totalActiveDps, displayedTops, null, ThemePalette.Vulkan,
+                    _mouseX, _mouseY, animTime, _isSettingsOpen, _testRegistry,
+                    fp32Tflops, fp64Tflops, fp16Tflops, bf16Tflops, int32Tiops, int64Tiops, int16Tiops, int8Tiops,
+                    dp2aTops, dp4aTops, 0.0, memBandwidthGbs, cacheL1L2Tbs, cacheL3Tbs, latencyNs,
+                    matFp16Tops, matBf16Tops, matInt8Tops);
 
                 gl.ActiveTexture(TextureUnit.Texture0);
                 gl.BindTexture(TextureTarget.Texture2D, uiTexture);
@@ -960,12 +963,17 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private void StartBenchmark()
     {
         if (!_testRegistry.HasActiveTests()) return;
-
         lock (_queueLock)
         {
             RecordCommandBuffers();
             _totalSubmits = 0;
             _liveTestDps.Clear();
+            lock (_totalDispatchesByTest)
+            {
+                _totalDispatchesByTest.Clear();
+                _lastDispatchesSnapshot.Clear();
+            }
+            _lastDpsMeasureTime = 0.0;
             _benchTimer.Restart();
             _isBenchmarking = true;
         }
@@ -975,11 +983,15 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     {
         _isBenchmarking = false;
         _benchTimer.Stop();
-
         lock (_queueLock)
         {
             if (_device.Handle != 0) _vk.QueueWaitIdle(_computeQueue);
             _liveTestDps.Clear();
+            lock (_totalDispatchesByTest)
+            {
+                _totalDispatchesByTest.Clear();
+                _lastDispatchesSnapshot.Clear();
+            }
         }
     }
 
@@ -997,61 +1009,17 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             return;
         }
 
-        if (PixelUiEngine.BtnSettings.Contains(x, y))
-        {
-            _isSettingsOpen = true;
-            return;
-        }
+        if (PixelUiEngine.BtnSettings.Contains(x, y)) { _isSettingsOpen = true; return; }
 
-        if (PixelUiEngine.BtnStartStop.Contains(x, y))
-        {
-            _isCustomFocused = false;
-            ToggleBenchmark();
-        }
-        else if (PixelUiEngine.Btn10s.Contains(x, y))
-        {
-            _targetDurationSec = 10;
-            _customInputBuffer = "10";
-            _isCustomFocused = false;
-        }
-        else if (PixelUiEngine.Btn30s.Contains(x, y))
-        {
-            _targetDurationSec = 30;
-            _customInputBuffer = "30";
-            _isCustomFocused = false;
-        }
-        else if (PixelUiEngine.Btn60s.Contains(x, y))
-        {
-            _targetDurationSec = 60;
-            _customInputBuffer = "60";
-            _isCustomFocused = false;
-        }
-        else if (PixelUiEngine.BtnUnlimited.Contains(x, y))
-        {
-            _targetDurationSec = 0;
-            _customInputBuffer = "";
-            _isCustomFocused = false;
-        }
-        else if (PixelUiEngine.InputCustom.Contains(x, y))
-        {
-            _isCustomFocused = true;
-        }
-        else if (PixelUiEngine.BtnMinus.Contains(x, y))
-        {
-            _targetDurationSec = Math.Max(1, _targetDurationSec - 5);
-            _customInputBuffer = _targetDurationSec.ToString();
-            _isCustomFocused = false;
-        }
-        else if (PixelUiEngine.BtnPlus.Contains(x, y))
-        {
-            _targetDurationSec += 5;
-            _customInputBuffer = _targetDurationSec.ToString();
-            _isCustomFocused = false;
-        }
-        else
-        {
-            _isCustomFocused = false;
-        }
+        if (PixelUiEngine.BtnStartStop.Contains(x, y)) { _isCustomFocused = false; ToggleBenchmark(); }
+        else if (PixelUiEngine.Btn10s.Contains(x, y)) { _targetDurationSec = 10; _customInputBuffer = "10"; _isCustomFocused = false; }
+        else if (PixelUiEngine.Btn30s.Contains(x, y)) { _targetDurationSec = 30; _customInputBuffer = "30"; _isCustomFocused = false; }
+        else if (PixelUiEngine.Btn60s.Contains(x, y)) { _targetDurationSec = 60; _customInputBuffer = "60"; _isCustomFocused = false; }
+        else if (PixelUiEngine.BtnUnlimited.Contains(x, y)) { _targetDurationSec = 0; _customInputBuffer = ""; _isCustomFocused = false; }
+        else if (PixelUiEngine.InputCustom.Contains(x, y)) { _isCustomFocused = true; }
+        else if (PixelUiEngine.BtnMinus.Contains(x, y)) { _targetDurationSec = Math.Max(1, _targetDurationSec - 5); _customInputBuffer = _targetDurationSec.ToString(); _isCustomFocused = false; }
+        else if (PixelUiEngine.BtnPlus.Contains(x, y)) { _targetDurationSec += 5; _customInputBuffer = _targetDurationSec.ToString(); _isCustomFocused = false; }
+        else { _isCustomFocused = false; }
     }
 
     private static uint CreateGlProgram(GL gl, string vsSrc, string fsSrc)
@@ -1074,15 +1042,13 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         return program;
     }
 
-    /// <summary>
-    /// Releases all native Vulkan and OpenGL allocated resources.
-    /// </summary>
     public void Dispose()
     {
         _isBenchmarking = false;
         _computeCts?.Cancel();
         _computeThread?.Join();
         _computeCts?.Dispose();
+        _inputContext?.Dispose();
 
         lock (_queueLock)
         {

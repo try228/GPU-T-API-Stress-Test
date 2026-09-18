@@ -55,6 +55,64 @@ public static class PixelUiEngine
     public static readonly Rect ModalPreFull = new(590, 54, 100, 22);
     public static readonly Rect ModalClose = new(735, 54, 120, 22);
 
+    private static readonly byte[][] GlyphTable = new byte[128][];
+    private static readonly byte[] EmptyGlyph = new byte[8];
+
+    static PixelUiEngine()
+    {
+        for (int i = 0; i < 128; i++) GlyphTable[i] = EmptyGlyph;
+
+        GlyphTable['A'] = [0x18, 0x3C, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00];
+        GlyphTable['B'] = [0x7C, 0x66, 0x7C, 0x66, 0x66, 0x66, 0x7C, 0x00];
+        GlyphTable['C'] = [0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00];
+        GlyphTable['D'] = [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00];
+        GlyphTable['E'] = [0x7E, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x7E, 0x00];
+        GlyphTable['F'] = [0x7E, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x60, 0x00];
+        GlyphTable['G'] = [0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3E, 0x00];
+        GlyphTable['H'] = [0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x66, 0x00];
+        GlyphTable['I'] = [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00];
+        GlyphTable['J'] = [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38, 0x00];
+        GlyphTable['K'] = [0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00];
+        GlyphTable['L'] = [0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00];
+        GlyphTable['M'] = [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00];
+        GlyphTable['N'] = [0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00];
+        GlyphTable['O'] = [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00];
+        GlyphTable['P'] = [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00];
+        GlyphTable['Q'] = [0x3C, 0x66, 0x66, 0x66, 0x6A, 0x6C, 0x36, 0x00];
+        GlyphTable['R'] = [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00];
+        GlyphTable['S'] = [0x3C, 0x66, 0x30, 0x1C, 0x06, 0x66, 0x3C, 0x00];
+        GlyphTable['T'] = [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00];
+        GlyphTable['U'] = [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00];
+        GlyphTable['V'] = [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00];
+        GlyphTable['W'] = [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00];
+        GlyphTable['X'] = [0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00];
+        GlyphTable['Y'] = [0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00];
+        GlyphTable['Z'] = [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00];
+        GlyphTable['0'] = [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00];
+        GlyphTable['1'] = [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00];
+        GlyphTable['2'] = [0x3C, 0x66, 0x06, 0x1C, 0x30, 0x60, 0x7E, 0x00];
+        GlyphTable['3'] = [0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00];
+        GlyphTable['4'] = [0x0C, 0x1C, 0x34, 0x64, 0x7E, 0x04, 0x04, 0x00];
+        GlyphTable['5'] = [0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00];
+        GlyphTable['6'] = [0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00];
+        GlyphTable['7'] = [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00];
+        GlyphTable['8'] = [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00];
+        GlyphTable['9'] = [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00];
+        GlyphTable['+'] = [0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00];
+        GlyphTable['-'] = [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00];
+        GlyphTable[':'] = [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00];
+        GlyphTable['.'] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00];
+        GlyphTable['/'] = [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00];
+        GlyphTable['|'] = [0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00];
+        GlyphTable['_'] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00];
+        GlyphTable['['] = [0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00];
+        GlyphTable[']'] = [0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00];
+        GlyphTable['%'] = [0x62, 0x64, 0x08, 0x10, 0x20, 0x26, 0x46, 0x00];
+        GlyphTable['~'] = [0x00, 0x32, 0x4C, 0x00, 0x00, 0x00, 0x00, 0x00];
+        GlyphTable['>'] = [0x60, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x60, 0x00];
+        GlyphTable['<'] = [0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00];
+    }
+
     public static string FormatGpuName(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Generic GPU";
@@ -66,9 +124,6 @@ public static class PixelUiEngine
         return raw.Trim();
     }
 
-    /// <summary>
-    /// Single unified render method compatible with all backend benchmark engines.
-    /// </summary>
     public static unsafe void Render(
         uint* buffer, int width, int height,
         string apiTitle, string gpuName, bool isBenchmarking, int durationSec,
@@ -82,16 +137,21 @@ public static class PixelUiEngine
         double fp32Tflops = 0.0,
         double fp64Tflops = 0.0,
         double fp16Tflops = 0.0,
+        double bf16Tflops = 0.0,
         double int32Tiops = 0.0,
         double int64Tiops = 0.0,
         double int16Tiops = 0.0,
-        double int8Tops = 0.0,
+        double int8Tiops = 0.0,
         double dp2aTops = 0.0,
+        double dp4aTops = 0.0,
         double tmuGtexels = 0.0,
         double memBwGbs = 0.0,
         double cacheL1L2Tbs = 0.0,
         double cacheL3Tbs = 0.0,
-        double latencyNs = 0.0)
+        double latencyNs = 0.0,
+        double matFp16Tops = 0.0,
+        double matBf16Tops = 0.0,
+        double matInt8Tops = 0.0)
     {
         RenderGpuZBackground(buffer, width, height, isBenchmarking ? animTime : 0.0f, isBenchmarking, theme);
 
@@ -139,69 +199,79 @@ public static class PixelUiEngine
         }
 
         // Telemetry HUD Panel
-        int hudY = 380, hudH = 135;
+        int hudY = 355, hudH = 168;
         FillRectAlpha(buffer, width, 35, hudY, 830, hudH, 0xEE0D1117);
         DrawRect(buffer, width, 35, hudY, 830, hudH, isBenchmarking ? accentColor : 0xFF30363D);
 
         string durStr = durationSec == 0 ? $"{elapsedSec:F1}s / Unlimited" : $"{elapsedSec:F1}s / {durationSec}s";
-        DrawString(buffer, width, 55, hudY + 12, $"BENCHMARK TIME: {durStr}   •   ITERATION RATE: {dps:F0} Dispatches/s", 0xFFF0F6FC, 1);
+        DrawString(buffer, width, 50, hudY + 10, $"BENCHMARK TIME: {durStr}   •   TOTAL DISPATCH RATE: {dps:F0} Dispatches/s", 0xFFF0F6FC, 1);
 
-        bool hasGranularCompute = (fp32Tflops > 0 || fp64Tflops > 0 || fp16Tflops > 0 || int32Tiops > 0 || int64Tiops > 0 || int16Tiops > 0 || int8Tops > 0 || dp2aTops > 0 || tmuGtexels > 0);
+        bool hasGranularCompute = (fp32Tflops > 0 || fp64Tflops > 0 || fp16Tflops > 0 || bf16Tflops > 0 ||
+                                   int32Tiops > 0 || int64Tiops > 0 || int16Tiops > 0 || int8Tiops > 0 ||
+                                   dp2aTops > 0 || dp4aTops > 0 || tmuGtexels > 0 ||
+                                   matFp16Tops > 0 || matBf16Tops > 0 || matInt8Tops > 0);
         bool hasGranularMemory = (cacheL1L2Tbs > 0 || cacheL3Tbs > 0 || memBwGbs > 0 || latencyNs > 0);
 
         if (hasGranularCompute || hasGranularMemory)
         {
-            List<string> computeList = new();
-            if (fp32Tflops > 0) computeList.Add($"FP32: {fp32Tflops:F2} TFLOPS");
-            if (fp64Tflops > 0) computeList.Add($"FP64: {fp64Tflops:F2} TFLOPS");
-            if (fp16Tflops > 0) computeList.Add($"FP16: {fp16Tflops:F2} TFLOPS");
-            if (int32Tiops > 0) computeList.Add($"INT32: {int32Tiops:F2} TIOPS");
-            if (int16Tiops > 0) computeList.Add($"INT16: {int16Tiops:F2} TIOPS");
-            if (int64Tiops > 0) computeList.Add($"INT64: {int64Tiops:F2} TIOPS");
-            if (int8Tops > 0)   computeList.Add($"INT8/DP4A: {int8Tops:F2} TOPS");
-            if (dp2aTops > 0)   computeList.Add($"INT16/DP2A: {dp2aTops:F2} TOPS");
-            if (tmuGtexels > 0) computeList.Add($"TMU: {tmuGtexels:F1} GTexel/s");
+            List<string> floatList = new();
+            if (fp32Tflops > 0) floatList.Add($"FP32: {fp32Tflops:F2} TFLOPS");
+            if (fp16Tflops > 0) floatList.Add($"FP16: {fp16Tflops:F2} TFLOPS");
+            if (bf16Tflops > 0) floatList.Add($"BF16: {bf16Tflops:F2} TFLOPS");
+            if (fp64Tflops > 0) floatList.Add($"FP64: {fp64Tflops:F2} TFLOPS");
+            string lineFloats = floatList.Count > 0 ? string.Join("   •   ", floatList) : "STANDBY";
+            DrawString(buffer, width, 50, hudY + 29, $"ALU FLOATS   |   {lineFloats}", isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
 
-            string line1 = computeList.Count > 0 ? string.Join("  |  ", computeList) : "COMPUTE ENGINES: STANDBY";
-            DrawString(buffer, width, 55, hudY + 35, line1, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+            List<string> intList = new();
+            if (int32Tiops > 0) intList.Add($"INT32: {int32Tiops:F2} TIOPS");
+            if (int16Tiops > 0) intList.Add($"INT16: {int16Tiops:F2} TIOPS");
+            if (int64Tiops > 0) intList.Add($"INT64: {int64Tiops:F2} TIOPS");
+            if (int8Tiops > 0)  intList.Add($"INT8: {int8Tiops:F2} TIOPS");
+            string lineInts = intList.Count > 0 ? string.Join("   •   ", intList) : "STANDBY";
+            DrawString(buffer, width, 50, hudY + 47, $"ALU INTS     |   {lineInts}", isBenchmarking ? 0xFFFFB74D : 0xFF8B949E, 1);
+
+            List<string> tensorList = new();
+            if (matFp16Tops > 0) tensorList.Add($"MAT-FP16: {matFp16Tops:F2} TFLOPS");
+            if (matBf16Tops > 0) tensorList.Add($"MAT-BF16: {matBf16Tops:F2} TFLOPS");
+            if (matInt8Tops > 0) tensorList.Add($"MAT-INT8: {matInt8Tops:F2} TIOPS");
+            if (dp4aTops > 0)    tensorList.Add($"DP4A: {dp4aTops:F2} TIOPS");
+            if (dp2aTops > 0)    tensorList.Add($"DP2A: {dp2aTops:F2} TIOPS");
+            if (tmuGtexels > 0)  tensorList.Add($"TMU: {tmuGtexels:F1} GTex/s");
+            string lineTensor = tensorList.Count > 0 ? string.Join("   •   ", tensorList) : "STANDBY";
+            DrawString(buffer, width, 50, hudY + 65, $"TENSOR & AI  |   {lineTensor}", isBenchmarking ? 0xFFFF8A65 : 0xFF8B949E, 1);
 
             List<string> memList = new();
             if (cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
-            if (cacheL3Tbs > 0)   memList.Add($"L3 INFINITY: {cacheL3Tbs:F2} TB/s");
-            if (memBwGbs > 0)     memList.Add($"VRAM BUS: {memBwGbs:F1} GB/s");
+            if (cacheL3Tbs > 0)   memList.Add($"L3: {cacheL3Tbs:F2} TB/s");
+            if (memBwGbs > 0)     memList.Add($"VRAM: {memBwGbs:F1} GB/s");
             if (latencyNs > 0)    memList.Add($"LATENCY: {latencyNs:F1} ns");
-
-            string line2 = memList.Count > 0 ? string.Join("  |  ", memList) : "MEMORY FABRIC: 100% STABLE";
-            DrawString(buffer, width, 55, hudY + 58, line2, isBenchmarking ? 0xFF58A6FF : 0xFF8B949E, 1);
+            string lineMem = memList.Count > 0 ? string.Join("   •   ", memList) : "100% STABLE";
+            DrawString(buffer, width, 50, hudY + 83, $"MEMORY FAB.  |   {lineMem}", isBenchmarking ? 0xFF58A6FF : 0xFF8B949E, 1);
         }
         else
         {
             string loadMetric = isBenchmarking ? $"COMPUTE LOAD: ~{totalTops:F2} TOPS / TFLOPS" : "COMPUTE LOAD: IDLE (STANDBY)";
-            DrawString(buffer, width, 55, hudY + 35, loadMetric, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+            DrawString(buffer, width, 50, hudY + 35, loadMetric, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
 
             if (!string.IsNullOrEmpty(hwSensorStr))
-            {
-                DrawString(buffer, width, 55, hudY + 58, $"HARDWARE TELEMETRY: {hwSensorStr}", accentColor, 1);
-            }
+                DrawString(buffer, width, 50, hudY + 58, $"HARDWARE TELEMETRY: {hwSensorStr}", accentColor, 1);
             else
-            {
-                DrawString(buffer, width, 55, hudY + 58, "COMPUTE PIPELINE: 100% Silicon Saturation (Active)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
-            }
+                DrawString(buffer, width, 50, hudY + 58, "COMPUTE PIPELINE: 100% Silicon Saturation (Active)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
         }
 
         string activeStatus = registry != null 
-            ? $"ACTIVE WORKLOADS: {registry.GetActiveCount()} Silicon Engines Engaged"
-            : "PIPELINE STATUS: Direct Native Hardware Execution";
-        DrawString(buffer, width, 55, hudY + 81, activeStatus, accentColor, 1);
+            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Silicon Workloads Engaged   •   Direct Native Vulkan Execution"
+            : "PIPELINE STATUS: Direct Native Vulkan Hardware Execution";
+        DrawString(buffer, width, 50, hudY + 104, activeStatus, accentColor, 1);
 
         if (durationSec > 0 && isBenchmarking)
         {
             float progress = Math.Clamp((float)(elapsedSec / durationSec), 0f, 1f);
-            FillRectAlpha(buffer, width, 55, hudY + 108, 790, 6, 0xFF21262D);
-            FillRectAlpha(buffer, width, 55, hudY + 108, (int)(790 * progress), 6, accentColor);
+            FillRectAlpha(buffer, width, 50, hudY + 126, 800, 6, 0xFF21262D);
+            FillRectAlpha(buffer, width, 50, hudY + 126, (int)(800 * progress), 6, accentColor);
         }
 
-        DrawString(buffer, width, 35, 525, registry != null 
+        DrawString(buffer, width, 35, 530, registry != null 
             ? "Click [CFG] to configure test matrix. Press SPACE to Start/Stop. ESC to Exit." 
             : "Click buttons to control benchmark. Press SPACE to Start/Stop. ESC to Exit.", 0xFF6E7681, 1);
 
@@ -264,7 +334,7 @@ public static class PixelUiEngine
                 FillRectAlpha(buffer, width, itemRect.X, itemRect.Y, itemRect.W, itemRect.H, 0x4430363D);
             }
 
-            string displayName = !item.IsSupported ? $"[─] {item.Name} (N/A)" : (item.IsChecked ? $"[V] {item.Name}" : $"[ ] {item.Name}");
+            string displayName = !item.IsSupported ? $"[-] {item.Name} (N/A)" : (item.IsChecked ? $"[V] {item.Name}" : $"[ ] {item.Name}");
             uint textColor = !item.IsSupported ? 0xFF484F58 : (item.IsChecked ? 0xFFFFFFFF : 0xFF8B949E);
             DrawString(buffer, width, itemX, itemY + 1, displayName, textColor, 1);
             colRows[col]++;
@@ -412,20 +482,32 @@ public static class PixelUiEngine
 
     private static unsafe void FillRectAlpha(uint* buffer, int bufW, int x, int y, int w, int h, uint col)
     {
+        int startX = Math.Max(0, x);
+        int startY = Math.Max(0, y);
+        int endX = Math.Min(BaseWidth, x + w);
+        int endY = Math.Min(BaseHeight, y + h);
+
+        if (startX >= endX || startY >= endY) return;
+
         byte a = (byte)(col >> 24);
         if (a == 255)
         {
-            for (int j = y; j < y + h && j < BaseHeight; j++)
-                for (int i = x; i < x + w && i < BaseWidth; i++)
-                    buffer[j * bufW + i] = col;
+            for (int j = startY; j < endY; j++)
+            {
+                int row = j * bufW;
+                for (int i = startX; i < endX; i++)
+                    buffer[row + i] = col;
+            }
             return;
         }
+
         float alpha = a / 255.0f, invA = 1.0f - alpha;
         uint srcR = (col >> 16) & 0xFF, srcG = (col >> 8) & 0xFF, srcB = col & 0xFF;
-        for (int j = y; j < y + h && j < BaseHeight; j++)
+
+        for (int j = startY; j < endY; j++)
         {
             int row = j * bufW;
-            for (int i = x; i < x + w && i < BaseWidth; i++)
+            for (int i = startX; i < endX; i++)
             {
                 uint dst = buffer[row + i];
                 uint outR = (uint)(srcR * alpha + ((dst >> 16) & 0xFF) * invA);
@@ -463,8 +545,10 @@ public static class PixelUiEngine
     {
         for (int c = 0; c < text.Length; c++)
         {
-            char ch = char.ToUpperInvariant(text[c]);
-            byte[] glyph = GetGlyph(ch);
+            char rawCh = text[c];
+            char ch = char.ToUpperInvariant(rawCh);
+            byte[] glyph = ((int)ch < 128) ? GlyphTable[(int)ch] : (rawCh == '•' ? [0x00, 0x18, 0x3C, 0x3C, 0x18, 0x00, 0x00, 0x00] : EmptyGlyph);
+
             for (int r = 0; r < 8; r++)
             {
                 byte row = glyph[r];
@@ -477,64 +561,12 @@ public static class PixelUiEngine
                             {
                                 int px = x + (c * 8 + b) * scale + sx;
                                 int py = y + r * scale + sy;
-                                if (px >= 0 && px < BaseWidth && py >= 0 && py < BaseHeight) buffer[py * bufW + px] = color;
+                                if (px >= 0 && px < BaseWidth && py >= 0 && py < BaseHeight)
+                                    buffer[py * bufW + px] = color;
                             }
                     }
                 }
             }
         }
     }
-
-    private static byte[] GetGlyph(char c) => c switch
-    {
-        'A' => [0x18, 0x3C, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
-        'B' => [0x7C, 0x66, 0x7C, 0x66, 0x66, 0x66, 0x7C, 0x00],
-        'C' => [0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00],
-        'D' => [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00],
-        'E' => [0x7E, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x7E, 0x00],
-        'F' => [0x7E, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x60, 0x00],
-        'G' => [0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3E, 0x00],
-        'H' => [0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x66, 0x00],
-        'I' => [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
-        'J' => [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38, 0x00],
-        'K' => [0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00],
-        'L' => [0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00],
-        'M' => [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
-        'N' => [0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00],
-        'O' => [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
-        'P' => [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
-        'Q' => [0x3C, 0x66, 0x66, 0x66, 0x6A, 0x6C, 0x36, 0x00],
-        'R' => [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
-        'S' => [0x3C, 0x66, 0x30, 0x1C, 0x06, 0x66, 0x3C, 0x00],
-        'T' => [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
-        'U' => [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
-        'V' => [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00],
-        'W' => [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00],
-        'X' => [0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00],
-        'Y' => [0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00],
-        'Z' => [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00],
-        '0' => [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00],
-        '1' => [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00],
-        '2' => [0x3C, 0x66, 0x06, 0x1C, 0x30, 0x60, 0x7E, 0x00],
-        '3' => [0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00],
-        '4' => [0x0C, 0x1C, 0x34, 0x64, 0x7E, 0x04, 0x04, 0x00],
-        '5' => [0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00],
-        '6' => [0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00],
-        '7' => [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00],
-        '8' => [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00],
-        '9' => [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00],
-        '+' => [0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00],
-        '-' => [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
-        '─' => [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
-        ':' => [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
-        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
-        '/' => [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00],
-        '|' => [0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
-        '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00],
-        '[' => [0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00],
-        ']' => [0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00],
-        '•' => [0x00, 0x18, 0x3C, 0x3C, 0x18, 0x00, 0x00, 0x00],
-        '%' => [0x62, 0x64, 0x08, 0x10, 0x20, 0x26, 0x46, 0x00],
-        _   => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-    };
 }

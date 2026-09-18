@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -34,39 +35,13 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
     private double _smoothedValue = 0.0;
     private readonly object _stateLock = new();
 
-    /// <summary>
-    /// Gets a value indicating whether hardware performance queries are supported by the driver.
-    /// </summary>
     public bool IsSupported => _queryPool.Handle != 0;
-
-    /// <summary>
-    /// Gets a value indicating whether the profiling lock is currently held on the GPU silicon.
-    /// </summary>
     public bool IsLockAcquired => _lockAcquired;
-
-    /// <summary>
-    /// Gets the human-readable display name of the selected GPU silicon counter.
-    /// </summary>
     public string SelectedCounterName { get; private set; } = "None";
-
-    /// <summary>
-    /// Gets the total number of hardware performance counters exposed by the GPU queue family.
-    /// </summary>
     public uint TotalHardwareCounters => _totalHardwareCounters;
-
-    /// <summary>
-    /// Gets the formatted telemetry string representing the live hardware sensor readout and status.
-    /// </summary>
     public string FormattedCounterValue { get; private set; } = "N/A (Pipeline Math Fallback)";
-
-    /// <summary>
-    /// Gets the handle to the underlying Vulkan performance query pool.
-    /// </summary>
     public QueryPool QueryPool => _queryPool;
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="VulkanPerfQueryManager"/> class.
-    /// </summary>
     public VulkanPerfQueryManager(
         Vk vk,
         Instance instance,
@@ -117,10 +92,15 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             PerformanceCounterKHR* pCounters = stackalloc PerformanceCounterKHR[(int)counterCount];
             PerformanceCounterDescriptionKHR* pDescs = stackalloc PerformanceCounterDescriptionKHR[(int)counterCount];
 
+            Unsafe.InitBlock(pCounters, 0, (uint)(sizeof(PerformanceCounterKHR) * counterCount));
+            Unsafe.InitBlock(pDescs, 0, (uint)(sizeof(PerformanceCounterDescriptionKHR) * counterCount));
+
             for (int i = 0; i < (int)counterCount; i++)
             {
                 pCounters[i].SType = VulkanConstants.StructureTypePerformanceCounterKHR;
+                pCounters[i].PNext = null;
                 pDescs[i].SType = VulkanConstants.StructureTypePerformanceCounterDescriptionKHR;
+                pDescs[i].PNext = null;
             }
 
             _pfnEnumerate(_physicalDevice, _queueFamilyIndex, &counterCount, pCounters, pDescs);
@@ -146,6 +126,7 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
             QueryPoolPerformanceCreateInfoKHR perfPoolInfo = new()
             {
                 SType = VulkanConstants.StructureTypeQueryPoolPerformanceCreateInfoKHR,
+                PNext = null,
                 QueueFamilyIndex = _queueFamilyIndex,
                 CounterIndexCount = 1,
                 PCounterIndices = &cIdx
@@ -195,9 +176,6 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         return fnPtr;
     }
 
-    /// <summary>
-    /// Acquires the GPU profiling lock. Called strictly when benchmarking starts.
-    /// </summary>
     public bool AcquireLock()
     {
         lock (_stateLock)
@@ -208,7 +186,8 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
                 AcquireProfilingLockInfoKHR lockInfo = new()
                 {
                     SType = VulkanConstants.StructureTypeAcquireProfilingLockInfoKHR,
-                    Timeout = 1_000_000_000 // 1.0 second timeout
+                    PNext = null,
+                    Timeout = 1_000_000_000
                 };
                 Result res = _pfnAcquireLock(_device, &lockInfo);
                 if (res == Result.Success)
@@ -229,9 +208,6 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Releases the GPU profiling lock. Called strictly when benchmarking stops to return GPU to 0% idle state.
-    /// </summary>
     public void ReleaseLock()
     {
         lock (_stateLock)
@@ -247,9 +223,6 @@ public sealed unsafe class VulkanPerfQueryManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Fetches the hardware query results for a specific slot and updates the EMA smoothed telemetry.
-    /// </summary>
     public void FetchResults(uint slotIndex = 0)
     {
         if (_queryPool.Handle == 0 || !_lockAcquired) return;

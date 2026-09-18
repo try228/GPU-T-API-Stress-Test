@@ -19,39 +19,13 @@ public enum StressPreset
 /// </summary>
 public sealed class StressTestItem
 {
-    /// <summary>
-    /// Gets the unique string identifier for the workload.
-    /// </summary>
     public string Id { get; }
-
-    /// <summary>
-    /// Gets the user-friendly display name.
-    /// </summary>
     public string Name { get; }
-
-    /// <summary>
-    /// Gets the category grouping for UI matrix layout.
-    /// </summary>
     public string Category { get; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the underlying physical hardware supports this workload.
-    /// </summary>
     public bool IsSupported { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether this test is currently selected for execution.
-    /// </summary>
     public bool IsChecked { get; set; }
-
-    /// <summary>
-    /// Gets the measurement unit label (e.g., TFLOPS, TOPS, GB/s, ns).
-    /// </summary>
     public string MetricUnit { get; }
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="StressTestItem"/> class.
-    /// </summary>
     public StressTestItem(string id, string name, string category, bool isSupported, string metricUnit, bool defaultChecked = false)
     {
         Id = id;
@@ -68,20 +42,14 @@ public sealed class StressTestItem
 /// </summary>
 public sealed class VulkanTestRegistry
 {
-    /// <summary>
-    /// Gets the complete list of registered stress test workloads.
-    /// </summary>
     public List<StressTestItem> Items { get; } = new();
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="VulkanTestRegistry"/> class, probing hardware capabilities.
-    /// </summary>
-    /// <param name="probe">The probed hardware capability descriptor.</param>
     public VulkanTestRegistry(VulkanCapabilityProbe probe)
     {
         // 1. COMPUTE ALU: FLOATING POINT
         Items.Add(new("alu_fp32", "FP32 Core FMA",     "ALU (FLOAT)", true, "TFLOPS", defaultChecked: true));
         Items.Add(new("alu_fp16", "FP16 Packed Math",  "ALU (FLOAT)", probe.HasFloat16, "TFLOPS"));
+        Items.Add(new("alu_bf16", "BF16 Shader Math",  "ALU (FLOAT)", probe.HasShaderBFloat16, "TFLOPS"));
         Items.Add(new("alu_fp64", "FP64 Double Prec.", "ALU (FLOAT)", probe.HasFloat64, "GFLOPS"));
 
         // 2. COMPUTE ALU: INTEGER & DOT PRODUCT
@@ -98,7 +66,7 @@ public sealed class VulkanTestRegistry
         Items.Add(new("mem_l3",   "L3/Infinity Cache", "VRAM & CACHES", probe.HasL3InfinityCache, "GB/s"));
         Items.Add(new("mem_lat",  "Pointer Latency",   "VRAM & CACHES", true, "ns"));
 
-        // 4. MATRIX / TENSOR DATA TYPES (Strict hardware capability verification)
+        // 4. MATRIX / TENSOR DATA TYPES
         Items.Add(new("mat_fp16",     "Matrix FP16 GEMM",   "MATRIX TYPES", probe.HasMatFP16, "TOPS"));
         Items.Add(new("mat_bf16",     "Matrix BF16 GEMM",   "MATRIX TYPES", probe.HasMatBF16, "TOPS"));
         Items.Add(new("mat_fp32",     "Matrix FP32 GEMM",   "MATRIX TYPES", probe.HasMatFP32, "TOPS"));
@@ -112,8 +80,8 @@ public sealed class VulkanTestRegistry
         Items.Add(new("mat_int64",    "Matrix INT64/U64",   "MATRIX TYPES", probe.HasMatINT64, "TOPS"));
 
         // 5. MATRIX MODIFIERS
-        Items.Add(new("mat_mod_nv2",  "NV CoopMat 2 (Tensor)", "MATRIX MODS", probe.HasCoopMatrixNV2, "MODE"));
-        Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasCoopMatrixNV, "MODE"));
+Items.Add(new("mat_mod_nv2",  "NV CoopMat 2 (Tensor)", "MATRIX MODS", probe.HasCoopMatrixNV2, "MODE"));
+Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasCoopMatrixNV, "MODE"));
 
         // 6. RAY TRACING
         Items.Add(new("rt_query", "Ray Query (Inline)", "RAY TRACING", probe.HasRayQuery, "MRays/s"));
@@ -156,9 +124,6 @@ public sealed class VulkanTestRegistry
         Items.Add(new("tmu_3d",    "3D/CubeMap Fetch",   "TMU TEXTURES", true, "GTexels/s"));
     }
 
-    /// <summary>
-    /// Checks whether a specific workload is both supported by hardware and currently selected.
-    /// </summary>
     public bool IsActive(string id)
     {
         for (int i = 0; i < Items.Count; i++)
@@ -169,9 +134,6 @@ public sealed class VulkanTestRegistry
         return false;
     }
 
-    /// <summary>
-    /// Determines whether at least one supported workload is currently active.
-    /// </summary>
     public bool HasActiveTests()
     {
         for (int i = 0; i < Items.Count; i++)
@@ -182,9 +144,6 @@ public sealed class VulkanTestRegistry
         return false;
     }
 
-    /// <summary>
-    /// Gets the total number of currently active silicon test workloads.
-    /// </summary>
     public int GetActiveCount()
     {
         int count = 0;
@@ -195,10 +154,6 @@ public sealed class VulkanTestRegistry
         return count;
     }
 
-    /// <summary>
-    /// Applies an automated preset selection across the test matrix.
-    /// </summary>
-    /// <param name="preset">The target stress preset to activate.</param>
     public void ApplyPreset(StressPreset preset)
     {
         foreach (var item in Items)
@@ -212,9 +167,9 @@ public sealed class VulkanTestRegistry
             item.IsChecked = preset switch
             {
                 StressPreset.DefaultFP32 => item.Id == "alu_fp32",
-                StressPreset.Gaming => item.Category.Contains("ALU") || item.Category.Contains("ROP") || item.Category.Contains("TMU") || item.Category.Contains("VRAM") && !item.Id.Contains("64") && !item.Id.Contains("32f") && !item.Id.Contains("mrt8"),
+                StressPreset.Gaming => (item.Category.Contains("ALU") || item.Category.Contains("ROP") || item.Category.Contains("TMU") || item.Category.Contains("VRAM")) && !item.Id.Contains("64") && !item.Id.Contains("32f") && !item.Id.Contains("mrt8"),
                 StressPreset.GamingRayTracing => item.Category.Contains("RAY TRACING") || item.Category.Contains("ALU") || item.Category.Contains("ROP") || item.Category.Contains("TMU") || item.Category.Contains("VRAM"),
-                StressPreset.MatrixAI => item.Category.Contains("MATRIX") || item.Id == "alu_dp4a" || item.Id == "alu_dp2a" || item.Id == "alu_fp16",
+                StressPreset.MatrixAI => item.Category.Contains("MATRIX") || item.Id == "alu_dp4a" || item.Id == "alu_dp2a" || item.Id == "alu_fp16" || item.Id == "alu_bf16",
                 StressPreset.MemoryCache => item.Category == "VRAM & CACHES" || item.Id.Contains("mrt"),
                 StressPreset.VideoEngine => item.Category == "VULKAN VIDEO",
                 StressPreset.FullSiliconBurn => true,
