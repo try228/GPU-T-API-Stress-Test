@@ -1,7 +1,7 @@
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Color and styling themes matching individual graphics and compute APIs.
+/// UI color themes representing different compute platforms and APIs.
 /// </summary>
 public enum ThemePalette
 {
@@ -19,14 +19,16 @@ public enum ThemePalette
 }
 
 /// <summary>
-/// Software pixel rendering engine for procedural HUD, controls, and modal matrix configuration.
-/// 100% unified across Vulkan, OpenGL, CUDA, ROCm, oneAPI, and OpenCL backends.
+/// Software rasterizer UI engine executing direct frame buffer rendering.
 /// </summary>
 public static class PixelUiEngine
 {
     public const int BaseWidth = 900;
     public const int BaseHeight = 550;
 
+    /// <summary>
+    /// Represents an axis-aligned 2D rectangle.
+    /// </summary>
     public struct Rect
     {
         public int X, Y, W, H;
@@ -34,7 +36,6 @@ public static class PixelUiEngine
         public bool Contains(int px, int py) => px >= X && px < X + W && py >= Y && py < Y + H;
     }
 
-    // Main Control Bar Rectangles
     public static readonly Rect BtnStartStop = new(35, 75, 195, 38);
     public static readonly Rect Btn10s = new(240, 75, 60, 38);
     public static readonly Rect Btn30s = new(308, 75, 60, 38);
@@ -45,7 +46,6 @@ public static class PixelUiEngine
     public static readonly Rect BtnPlus = new(783, 75, 45, 38);
     public static readonly Rect BtnSettings = new(834, 75, 32, 38);
 
-    // Modal Preset Buttons
     public static readonly Rect ModalPreBase = new(45, 54, 90, 22);
     public static readonly Rect ModalPreGaming = new(140, 54, 80, 22);
     public static readonly Rect ModalPreGamingRT = new(225, 54, 105, 22);
@@ -113,6 +113,9 @@ public static class PixelUiEngine
         GlyphTable['<'] = [0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00];
     }
 
+    /// <summary>
+    /// Formats raw GPU device names, trimming extraneous marketing identifiers.
+    /// </summary>
     public static string FormatGpuName(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Generic GPU";
@@ -124,6 +127,9 @@ public static class PixelUiEngine
         return raw.Trim();
     }
 
+    /// <summary>
+    /// Renders the complete dashboard interface into the provided pixel buffer.
+    /// </summary>
     public static unsafe void Render(
         uint* buffer, int width, int height,
         string apiTitle, string gpuName, bool isBenchmarking, int durationSec,
@@ -162,7 +168,7 @@ public static class PixelUiEngine
         FillRectAlpha(buffer, width, 0, 0, width, 55, 0xDD0D1117);
         DrawLine(buffer, width, 0, 55, width, 55, 0xFF30363D);
         DrawString(buffer, width, 25, 12, $"GPU-T RENDER TEST  |  {apiTitle.ToUpperInvariant()}", 0xFFE6EDF3, 2);
-        
+
         string cleanName = FormatGpuName(gpuName);
         DrawString(buffer, width, 25, 34, $"DEVICE: {cleanName}   •   STATUS: {(isBenchmarking ? "100% STRESS RUNNING" : "IDLE / STANDBY")}", isBenchmarking ? 0xFF3FB950 : accentColor, 1);
 
@@ -199,85 +205,136 @@ public static class PixelUiEngine
         }
 
         // Telemetry HUD Panel
-        int hudY = 355, hudH = 168;
+        int hudY = 345, hudH = 175;
         FillRectAlpha(buffer, width, 35, hudY, 830, hudH, 0xEE0D1117);
         DrawRect(buffer, width, 35, hudY, 830, hudH, isBenchmarking ? accentColor : 0xFF30363D);
 
         string durStr = durationSec == 0 ? $"{elapsedSec:F1}s / Unlimited" : $"{elapsedSec:F1}s / {durationSec}s";
-        DrawString(buffer, width, 50, hudY + 10, $"BENCHMARK TIME: {durStr}   •   TOTAL DISPATCH RATE: {dps:F0} Dispatches/s", 0xFFF0F6FC, 1);
+        DrawString(buffer, width, 50, hudY + 8, $"BENCHMARK TIME: {durStr}   •   TOTAL DISPATCH RATE: {dps:F0} Dispatches/s", 0xFFF0F6FC, 1);
 
-        bool hasGranularCompute = (fp32Tflops > 0 || fp64Tflops > 0 || fp16Tflops > 0 || bf16Tflops > 0 ||
-                                   int32Tiops > 0 || int64Tiops > 0 || int16Tiops > 0 || int8Tiops > 0 ||
-                                   dp2aTops > 0 || dp4aTops > 0 || tmuGtexels > 0 ||
-                                   matFp16Tops > 0 || matBf16Tops > 0 || matInt8Tops > 0);
+        int currentY = hudY + 26;
+        bool hasGranularCompute = registry != null && registry.HasActiveTests();
         bool hasGranularMemory = (cacheL1L2Tbs > 0 || cacheL3Tbs > 0 || memBwGbs > 0 || latencyNs > 0);
 
         if (hasGranularCompute || hasGranularMemory)
         {
+            // 1. ALU Floats
             List<string> floatList = new();
-            if (fp32Tflops > 0) floatList.Add($"FP32: {fp32Tflops:F2} TFLOPS");
-            if (fp16Tflops > 0) floatList.Add($"FP16: {fp16Tflops:F2} TFLOPS");
-            if (bf16Tflops > 0) floatList.Add($"BF16: {bf16Tflops:F2} TFLOPS");
-            if (fp64Tflops > 0) floatList.Add($"FP64: {fp64Tflops:F2} TFLOPS");
-            string lineFloats = floatList.Count > 0 ? string.Join("   •   ", floatList) : "STANDBY";
-            DrawString(buffer, width, 50, hudY + 29, $"ALU FLOATS   |   {lineFloats}", isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+            if (registry != null ? registry.IsActive("alu_fp32") : fp32Tflops > 0) floatList.Add($"FP32: {fp32Tflops:F2} TFLOPS");
+            if (registry != null ? registry.IsActive("alu_fp16") : fp16Tflops > 0) floatList.Add($"FP16: {fp16Tflops:F2} TFLOPS");
+            if (registry != null ? registry.IsActive("alu_bf16") : bf16Tflops > 0) floatList.Add($"BF16: {bf16Tflops:F2} TFLOPS");
+            if (registry != null ? registry.IsActive("alu_fp64") : fp64Tflops > 0) floatList.Add($"FP64: {fp64Tflops:F2} TFLOPS");
+            DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "ALU FLOATS   |   ", floatList, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E);
 
+            // 2. ALU Integers & Dot Product
             List<string> intList = new();
-            if (int32Tiops > 0) intList.Add($"INT32: {int32Tiops:F2} TIOPS");
-            if (int16Tiops > 0) intList.Add($"INT16: {int16Tiops:F2} TIOPS");
-            if (int64Tiops > 0) intList.Add($"INT64: {int64Tiops:F2} TIOPS");
-            if (int8Tiops > 0)  intList.Add($"INT8: {int8Tiops:F2} TIOPS");
-            string lineInts = intList.Count > 0 ? string.Join("   •   ", intList) : "STANDBY";
-            DrawString(buffer, width, 50, hudY + 47, $"ALU INTS     |   {lineInts}", isBenchmarking ? 0xFFFFB74D : 0xFF8B949E, 1);
+            if (registry != null ? registry.IsActive("alu_int32") : int32Tiops > 0) intList.Add($"INT32: {int32Tiops:F2} TIOPS");
+            if (registry != null ? registry.IsActive("alu_int16") : int16Tiops > 0) intList.Add($"INT16: {int16Tiops:F2} TIOPS");
+            if (registry != null ? registry.IsActive("alu_int64") : int64Tiops > 0) intList.Add($"INT64: {int64Tiops:F2} TIOPS");
+            if (registry != null ? registry.IsActive("alu_int8")  : int8Tiops > 0)  intList.Add($"INT8: {int8Tiops:F2} TIOPS");
+            if (registry != null ? registry.IsActive("alu_dp4a")  : dp4aTops > 0)  intList.Add($"DP4A: {dp4aTops:F2} TIOPS");
+            if (registry != null ? registry.IsActive("alu_dp2a")  : dp2aTops > 0)  intList.Add($"DP2A: {dp2aTops:F2} TIOPS");
+            DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "ALU INTS     |   ", intList, isBenchmarking ? 0xFFFFB74D : 0xFF8B949E);
 
+            // 3. Tensor & AI Matrix Types
             List<string> tensorList = new();
-            if (matFp16Tops > 0) tensorList.Add($"MAT-FP16: {matFp16Tops:F2} TFLOPS");
-            if (matBf16Tops > 0) tensorList.Add($"MAT-BF16: {matBf16Tops:F2} TFLOPS");
-            if (matInt8Tops > 0) tensorList.Add($"MAT-INT8: {matInt8Tops:F2} TIOPS");
-            if (dp4aTops > 0)    tensorList.Add($"DP4A: {dp4aTops:F2} TIOPS");
-            if (dp2aTops > 0)    tensorList.Add($"DP2A: {dp2aTops:F2} TIOPS");
-            if (tmuGtexels > 0)  tensorList.Add($"TMU: {tmuGtexels:F1} GTex/s");
-            string lineTensor = tensorList.Count > 0 ? string.Join("   •   ", tensorList) : "STANDBY";
-            DrawString(buffer, width, 50, hudY + 65, $"TENSOR & AI  |   {lineTensor}", isBenchmarking ? 0xFFFF8A65 : 0xFF8B949E, 1);
+            if (registry != null ? registry.IsActive("mat_fp16") : matFp16Tops > 0) tensorList.Add($"FP16: {matFp16Tops:F2} TFLOPS");
+            if (registry != null ? registry.IsActive("mat_bf16") : matBf16Tops > 0) tensorList.Add($"BF16: {matBf16Tops:F2} TFLOPS");
+            if (registry != null ? registry.IsActive("mat_int8") : matInt8Tops > 0) tensorList.Add($"INT8: {matInt8Tops:F2} TOPS");
+            if (registry != null && registry.IsActive("mat_mod_nv1"))               tensorList.Add("NV_COOPMAT1: ACTIVE");
+            if (registry != null && registry.IsActive("mat_mod_nv2"))               tensorList.Add("NV_COOPMAT2: ACTIVE");
+            if (registry != null && registry.IsActive("mat_int4"))                  tensorList.Add("INT4 (XMX): ENGAGED");
+            if (registry != null && registry.IsActive("mat_int64"))                 tensorList.Add("INT64: ENGAGED");
+            if ((registry != null && (registry.IsActive("tmu_aniso") || registry.IsActive("tmu_bdt"))) || tmuGtexels > 0)
+                tensorList.Add($"TMU: {tmuGtexels:F1} GTex/s");
+            DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "TENSOR & AI  |   ", tensorList, isBenchmarking ? 0xFFFF8A65 : 0xFF8B949E);
 
+            // 4. Memory Hierarchy
             List<string> memList = new();
-            if (cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
-            if (cacheL3Tbs > 0)   memList.Add($"L3: {cacheL3Tbs:F2} TB/s");
-            if (memBwGbs > 0)     memList.Add($"VRAM: {memBwGbs:F1} GB/s");
-            if (latencyNs > 0)    memList.Add($"LATENCY: {latencyNs:F1} ns");
-            string lineMem = memList.Count > 0 ? string.Join("   •   ", memList) : "100% STABLE";
-            DrawString(buffer, width, 50, hudY + 83, $"MEMORY FAB.  |   {lineMem}", isBenchmarking ? 0xFF58A6FF : 0xFF8B949E, 1);
+            if (registry != null ? registry.IsActive("mem_l1l2") : cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
+            if (registry != null ? registry.IsActive("mem_l3")   : cacheL3Tbs > 0)   memList.Add($"L3: {cacheL3Tbs:F2} TB/s");
+            if (registry != null ? registry.IsActive("mem_bw")   : memBwGbs > 0)     memList.Add($"VRAM: {memBwGbs:F1} GB/s");
+            if (registry != null ? registry.IsActive("mem_lat")  : latencyNs > 0)    memList.Add($"LATENCY: {latencyNs:F1} ns");
+            DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "MEMORY FAB.  |   ", memList, isBenchmarking ? 0xFF58A6FF : 0xFF8B949E);
         }
         else
         {
             string loadMetric = isBenchmarking ? $"COMPUTE LOAD: ~{totalTops:F2} TOPS / TFLOPS" : "COMPUTE LOAD: IDLE (STANDBY)";
-            DrawString(buffer, width, 50, hudY + 35, loadMetric, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+            DrawString(buffer, width, 50, currentY, loadMetric, isBenchmarking ? 0xFFE3B341 : 0xFF8B949E, 1);
+            currentY += 16;
 
             if (!string.IsNullOrEmpty(hwSensorStr))
-                DrawString(buffer, width, 50, hudY + 58, $"HARDWARE TELEMETRY: {hwSensorStr}", accentColor, 1);
+                DrawString(buffer, width, 50, currentY, $"HARDWARE TELEMETRY: {hwSensorStr}", accentColor, 1);
             else
-                DrawString(buffer, width, 50, hudY + 58, "COMPUTE PIPELINE: 100% Silicon Saturation (Active)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
+                DrawString(buffer, width, 50, currentY, "COMPUTE PIPELINE: 100% Silicon Saturation (Active)", isBenchmarking ? accentColor : 0xFF8B949E, 1);
+            currentY += 16;
         }
 
-        string activeStatus = registry != null 
-            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Silicon Workloads Engaged   •   Direct Native Vulkan Execution"
-            : "PIPELINE STATUS: Direct Native Vulkan Hardware Execution";
-        DrawString(buffer, width, 50, hudY + 104, activeStatus, accentColor, 1);
+        string activeStatus = registry != null
+            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Workloads Engaged   •   Direct Vulkan 1.0 (SPIR-V 1.0/1.3)"
+            : "PIPELINE STATUS: Direct Native Vulkan 1.0 Execution";
+        DrawString(buffer, width, 50, Math.Min(currentY + 2, hudY + 132), activeStatus, accentColor, 1);
 
         if (durationSec > 0 && isBenchmarking)
         {
             float progress = Math.Clamp((float)(elapsedSec / durationSec), 0f, 1f);
-            FillRectAlpha(buffer, width, 50, hudY + 126, 800, 6, 0xFF21262D);
-            FillRectAlpha(buffer, width, 50, hudY + 126, (int)(800 * progress), 6, accentColor);
+            FillRectAlpha(buffer, width, 50, hudY + 152, 800, 6, 0xFF21262D);
+            FillRectAlpha(buffer, width, 50, hudY + 152, (int)(800 * progress), 6, accentColor);
         }
 
-        DrawString(buffer, width, 35, 530, registry != null 
-            ? "Click [CFG] to configure test matrix. Press SPACE to Start/Stop. ESC to Exit." 
+        DrawString(buffer, width, 35, 530, registry != null
+            ? "Click [CFG] to configure matrix. Press SPACE to Start/Stop. ESC to Exit."
             : "Click buttons to control benchmark. Press SPACE to Start/Stop. ESC to Exit.", 0xFF6E7681, 1);
 
         if (isSettingsOpen && registry != null)
         {
             RenderSettingsModal(buffer, width, height, registry, mouseX, mouseY, accentColor, activeBtnBg, isBenchmarking);
+        }
+    }
+
+    private static unsafe void DrawWrappedCategoryLine(
+        uint* buffer, int bufW, int startX, ref int currentY,
+        string prefix, List<string> items, uint textColor)
+    {
+        if (items.Count == 0)
+        {
+            DrawString(buffer, bufW, startX, currentY, $"{prefix}STANDBY", textColor, 1);
+            currentY += 15;
+            return;
+        }
+
+        const int maxLineWidth = 820;
+        int prefixWidth = prefix.Length * 8;
+        string indent = new(' ', prefix.Length);
+
+        string curLine = "";
+        bool isFirstLine = true;
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            string item = items[i];
+            string candidate = string.IsNullOrEmpty(curLine) ? item : $"{curLine}   •   {item}";
+            int totalPx = startX + prefixWidth + (candidate.Length * 8);
+
+            if (totalPx > maxLineWidth && !string.IsNullOrEmpty(curLine))
+            {
+                string lineToDraw = isFirstLine ? $"{prefix}{curLine}" : $"{indent}{curLine}";
+                DrawString(buffer, bufW, startX, currentY, lineToDraw, textColor, 1);
+                currentY += 14;
+                isFirstLine = false;
+                curLine = item;
+            }
+            else
+            {
+                curLine = candidate;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(curLine))
+        {
+            string lineToDraw = isFirstLine ? $"{prefix}{curLine}" : $"{indent}{curLine}";
+            DrawString(buffer, bufW, startX, currentY, lineToDraw, textColor, 1);
+            currentY += 15;
         }
     }
 
@@ -313,6 +370,17 @@ public static class PixelUiEngine
         int[] colRows = new int[3];
         string[] lastCatInCol = new string[3] { "", "", "" };
 
+        // Check if VK_NV_cooperative_matrix (legacy) modifier is engaged
+        bool isNv1Active = false;
+        for (int k = 0; k < registry.Items.Count; k++)
+        {
+            if (registry.Items[k].Id == "mat_mod_nv1" && registry.Items[k].IsChecked)
+            {
+                isNv1Active = true;
+                break;
+            }
+        }
+
         for (int i = 0; i < registry.Items.Count; i++)
         {
             var item = registry.Items[i];
@@ -329,34 +397,83 @@ public static class PixelUiEngine
             int itemX = mx + 15 + col * colGap, itemY = startY + colRows[col] * 15;
             Rect itemRect = new(itemX, itemY, colWidth, 14);
 
-            if (itemRect.Contains(mouseX, mouseY) && item.IsSupported && !isBenchmarking)
+            // NV1 locks NV2 and formats not in VkComponentTypeNV (BF16, FP8, INT4)
+            bool isBlockedByNv1 = isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4");
+            bool isInteractable = item.IsSupported && !isBenchmarking && !isBlockedByNv1;
+
+            if (itemRect.Contains(mouseX, mouseY) && isInteractable)
             {
                 FillRectAlpha(buffer, width, itemRect.X, itemRect.Y, itemRect.W, itemRect.H, 0x4430363D);
             }
 
-            string displayName = !item.IsSupported ? $"[-] {item.Name} (N/A)" : (item.IsChecked ? $"[V] {item.Name}" : $"[ ] {item.Name}");
-            uint textColor = !item.IsSupported ? 0xFF484F58 : (item.IsChecked ? 0xFFFFFFFF : 0xFF8B949E);
+            string displayName;
+            if (!item.IsSupported)
+                displayName = $"[-] {item.Name} (N/A)";
+            else if (isBlockedByNv1)
+                displayName = $"[-] {item.Name} (NV1 LOCK)";
+            else
+                displayName = item.IsChecked ? $"[V] {item.Name}" : $"[ ] {item.Name}";
+
+            uint textColor = (!item.IsSupported || isBlockedByNv1) ? 0xFF484F58 : (item.IsChecked ? 0xFFFFFFFF : 0xFF8B949E);
             DrawString(buffer, width, itemX, itemY + 1, displayName, textColor, 1);
             colRows[col]++;
         }
     }
 
+    /// <summary>
+    /// Processes user input clicks inside the matrix configuration modal window.
+    /// </summary>
     public static void HandleSettingsClick(int mouseX, int mouseY, VulkanTestRegistry registry, ref bool isSettingsOpen, bool isBenchmarking = false)
     {
         if (ModalClose.Contains(mouseX, mouseY)) { isSettingsOpen = false; return; }
         if (isBenchmarking) return;
 
-        if (ModalPreBase.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.DefaultFP32); return; }
-        if (ModalPreGaming.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.Gaming); return; }
-        if (ModalPreGamingRT.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.GamingRayTracing); return; }
-        if (ModalPreAI.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.MatrixAI); return; }
-        if (ModalPreMem.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.MemoryCache); return; }
-        if (ModalPreVid.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.VideoEngine); return; }
-        if (ModalPreFull.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.FullSiliconBurn); return; }
+        void SanitizeNv1Conflicts()
+        {
+            bool nv1On = false;
+            for (int k = 0; k < registry.Items.Count; k++)
+            {
+                if (registry.Items[k].Id == "mat_mod_nv1" && registry.Items[k].IsChecked)
+                {
+                    nv1On = true;
+                    break;
+                }
+            }
+
+            if (nv1On)
+            {
+                for (int k = 0; k < registry.Items.Count; k++)
+                {
+                    var other = registry.Items[k];
+                    if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4")
+                    {
+                        other.IsChecked = false;
+                    }
+                }
+            }
+        }
+
+        if (ModalPreBase.Contains(mouseX, mouseY))     { registry.ApplyPreset(StressPreset.DefaultFP32); SanitizeNv1Conflicts(); return; }
+        if (ModalPreGaming.Contains(mouseX, mouseY))   { registry.ApplyPreset(StressPreset.Gaming); SanitizeNv1Conflicts(); return; }
+        if (ModalPreGamingRT.Contains(mouseX, mouseY)) { registry.ApplyPreset(StressPreset.GamingRayTracing); SanitizeNv1Conflicts(); return; }
+        if (ModalPreAI.Contains(mouseX, mouseY))       { registry.ApplyPreset(StressPreset.MatrixAI); SanitizeNv1Conflicts(); return; }
+        if (ModalPreMem.Contains(mouseX, mouseY))      { registry.ApplyPreset(StressPreset.MemoryCache); SanitizeNv1Conflicts(); return; }
+        if (ModalPreVid.Contains(mouseX, mouseY))      { registry.ApplyPreset(StressPreset.VideoEngine); SanitizeNv1Conflicts(); return; }
+        if (ModalPreFull.Contains(mouseX, mouseY))     { registry.ApplyPreset(StressPreset.FullSiliconBurn); SanitizeNv1Conflicts(); return; }
 
         int mx = 30, my = 15, startY = my + 70, colWidth = 265, colGap = 275;
         int[] colRows = new int[3];
         string[] lastCatInCol = new string[3] { "", "", "" };
+
+        bool isNv1Active = false;
+        for (int k = 0; k < registry.Items.Count; k++)
+        {
+            if (registry.Items[k].Id == "mat_mod_nv1" && registry.Items[k].IsChecked)
+            {
+                isNv1Active = true;
+                break;
+            }
+        }
 
         for (int i = 0; i < registry.Items.Count; i++)
         {
@@ -373,7 +490,26 @@ public static class PixelUiEngine
             Rect itemRect = new(mx + 15 + col * colGap, startY + colRows[col] * 15, colWidth, 14);
             if (itemRect.Contains(mouseX, mouseY) && item.IsSupported)
             {
+                // Disallow clicking NV2 or incompatible formats while NV1 is active
+                if (isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4"))
+                {
+                    return;
+                }
+
                 item.IsChecked = !item.IsChecked;
+
+                // If NV1 was just enabled, force uncheck NV2 and unsupported formats
+                if (item.Id == "mat_mod_nv1" && item.IsChecked)
+                {
+                    for (int k = 0; k < registry.Items.Count; k++)
+                    {
+                        var other = registry.Items[k];
+                        if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4")
+                        {
+                            other.IsChecked = false;
+                        }
+                    }
+                }
                 return;
             }
             colRows[col]++;

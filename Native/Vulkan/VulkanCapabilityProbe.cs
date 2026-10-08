@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -111,6 +114,9 @@ public sealed unsafe class VulkanCapabilityProbe
 
     private readonly HashSet<string> _supportedExtensions = new(StringComparer.OrdinalIgnoreCase);
 
+    // Хранилище обнаруженных аппаратных размеров тайлов для каждого типа данных
+    private readonly Dictionary<string, (int M, int N, int K)> _coopMatDimensions = new(StringComparer.OrdinalIgnoreCase);
+
     public uint VendorId { get; private set; }
     public PhysicalDeviceType DeviceType { get; private set; }
     public string DeviceName { get; private set; } = "Vulkan GPU";
@@ -165,6 +171,30 @@ public sealed unsafe class VulkanCapabilityProbe
     public bool HasVideoEncodeAV1 { get; private set; }
 
     public bool IsExtensionSupported(string extensionName) => _supportedExtensions.Contains(extensionName);
+
+    /// <summary>
+    /// Возвращает физически поддерживаемые аппаратные размеры матрицы (M, N, K) для заданного типа.
+    /// </summary>
+    public bool TryGetCoopMatDimensions(string type, out int m, out int n, out int k)
+    {
+        if (_coopMatDimensions.TryGetValue(type, out var dims))
+        {
+            m = dims.M;
+            n = dims.N;
+            k = dims.K;
+            return true;
+        }
+
+        // Для Intel INT4 XMX дефолтный аппаратный тайл
+        if (string.Equals(type, "INT4_INTEL", StringComparison.OrdinalIgnoreCase) && HasIntelInt4)
+        {
+            m = 8; n = 8; k = 64;
+            return true;
+        }
+
+        m = 0; n = 0; k = 0;
+        return false;
+    }
 
     public VulkanCapabilityProbe(Vk vk, PhysicalDevice physicalDevice, Instance instance, MockGpuTarget mockTarget = MockGpuTarget.None)
     {
@@ -251,7 +281,8 @@ public sealed unsafe class VulkanCapabilityProbe
         HasCoopMatrixNV = _supportedExtensions.Contains("VK_NV_cooperative_matrix");
         HasCoopMatrixNV2 = _supportedExtensions.Contains("VK_NV_cooperative_matrix2");
 
-        HasIntelInt4 = (VendorId == 0x8086) && HasCoopMatrixKHR && _supportedExtensions.Contains("VK_INTEL_shader_integer_functions2");
+        // Intel INT4 requires VK_KHR_cooperative_matrix on Intel hardware (Vendor 0x8086)
+        HasIntelInt4 = (VendorId == 0x8086) && HasCoopMatrixKHR;
 
         HasRayQuery = _supportedExtensions.Contains("VK_KHR_ray_query");
         HasRTPipeline = _supportedExtensions.Contains("VK_KHR_ray_tracing_pipeline");
@@ -285,6 +316,12 @@ public sealed unsafe class VulkanCapabilityProbe
         HasMatFP16 = HasMatBF16 = HasMatFP32 = HasMatFP64 = false;
         HasMatFP8_E4M3 = HasMatFP8_E5M2 = HasMatINT8 = false;
         HasMatINT16 = HasMatINT32 = HasMatINT64 = false;
+        _coopMatDimensions.Clear();
+
+        if (HasIntelInt4)
+        {
+            _coopMatDimensions["INT4_INTEL"] = (8, 8, 64);
+        }
 
         if (!HasCoopMatrixKHR && !HasCoopMatrixNV) return;
 
@@ -317,7 +354,14 @@ public sealed unsafe class VulkanCapabilityProbe
                             if (getPropertiesKhr(physicalDevice, &propCount, properties) == Result.Success)
                             {
                                 for (int i = 0; i < propCount; i++)
-                                    RegisterComponentTypeKHR(properties[i].AType);
+                                {
+                                    RegisterComponentTypeKHR(
+                                        properties[i].AType,
+                                        (int)properties[i].MSize,
+                                        (int)properties[i].NSize,
+                                        (int)properties[i].KSize
+                                    );
+                                }
                                 return;
                             }
                         }
@@ -331,34 +375,84 @@ public sealed unsafe class VulkanCapabilityProbe
             catch { }
         }
 
+        // Fallback если функция не вызвалась, но флаг есть
         if (HasCoopMatrixKHR || HasCoopMatrixNV)
         {
             HasMatFP16 = HasFloat16;
             HasMatINT8 = HasInt8;
+
+            int defM = VendorId == 0x8086 ? 8 : 16;
+            int defN = VendorId == 0x8086 ? 8 : 16;
+            int defK = VendorId == 0x8086 ? 16 : 16;
+
+            if (HasMatFP16 && !_coopMatDimensions.ContainsKey("FP16"))
+                _coopMatDimensions["FP16"] = (defM, defN, defK);
+            if (HasMatINT8 && !_coopMatDimensions.ContainsKey("INT8"))
+                _coopMatDimensions["INT8"] = (defM, defN, 32);
         }
     }
 
-    private void RegisterComponentTypeKHR(ComponentTypeKHR type)
+    private void RegisterComponentTypeKHR(ComponentTypeKHR type, int m, int n, int k)
     {
+        string? key = null;
+
         switch (type)
         {
-            case ComponentTypeKHR.Float16Khr: HasMatFP16 = true; break;
-            case ComponentTypeKHR.Float32Khr: HasMatFP32 = true; break;
-            case ComponentTypeKHR.Float64Khr: HasMatFP64 = true; break;
+            case ComponentTypeKHR.Float16Khr:
+                HasMatFP16 = true;
+                key = "FP16";
+                break;
+            case ComponentTypeKHR.Float32Khr:
+                HasMatFP32 = true;
+                key = "FP32";
+                break;
+            case ComponentTypeKHR.Float64Khr:
+                HasMatFP64 = true;
+                key = "FP64";
+                break;
             case ComponentTypeKHR.Sint8Khr:
-            case ComponentTypeKHR.Uint8Khr:   HasMatINT8 = true; break;
+            case ComponentTypeKHR.Uint8Khr:
+                HasMatINT8 = true;
+                key = "INT8";
+                break;
             case ComponentTypeKHR.Sint16Khr:
-            case ComponentTypeKHR.Uint16Khr:  HasMatINT16 = true; break;
+            case ComponentTypeKHR.Uint16Khr:
+                HasMatINT16 = true;
+                key = "INT16";
+                break;
             case ComponentTypeKHR.Sint32Khr:
-            case ComponentTypeKHR.Uint32Khr:  HasMatINT32 = true; break;
+            case ComponentTypeKHR.Uint32Khr:
+                HasMatINT32 = true;
+                key = "INT32";
+                break;
             case ComponentTypeKHR.Sint64Khr:
-            case ComponentTypeKHR.Uint64Khr:  HasMatINT64 = true; break;
+            case ComponentTypeKHR.Uint64Khr:
+                HasMatINT64 = true;
+                key = "INT64";
+                break;
             default:
                 uint val = (uint)type;
-                if (val == 1000141000 || val == 1000141001) HasMatBF16 = true;
-                else if (val == 1000491002) HasMatFP8_E4M3 = true;
-                else if (val == 1000491003) HasMatFP8_E5M2 = true;
+                if (val == 1000141000 || val == 1000141001)
+                {
+                    HasMatBF16 = true;
+                    key = "BF16";
+                }
+                else if (val == 1000491002)
+                {
+                    HasMatFP8_E4M3 = true;
+                    key = "FP8_E4M3";
+                }
+                else if (val == 1000491003)
+                {
+                    HasMatFP8_E5M2 = true;
+                    key = "FP8_E5M2";
+                }
                 break;
+        }
+
+        if (key != null && !_coopMatDimensions.ContainsKey(key))
+        {
+            _coopMatDimensions[key] = (m, n, k);
         }
     }
 
@@ -366,6 +460,7 @@ public sealed unsafe class VulkanCapabilityProbe
     {
         HasFloat64 = true; HasInt64 = true; HasInt16 = true;
         SubgroupSize = 32;
+        _coopMatDimensions.Clear();
 
         if (target == MockGpuTarget.NvidiaBlackwell)
         {
@@ -379,6 +474,13 @@ public sealed unsafe class VulkanCapabilityProbe
             HasMatFP8_E4M3 = true; HasMatFP8_E5M2 = true;
             HasRayQuery = true; HasRTPipeline = true; HasSER = true; HasOMM = true; HasRTPositionFetch = true;
             HasVideoDecodeAV1 = true; HasVideoEncodeAV1 = true;
+
+            _coopMatDimensions["FP16"] = (16, 16, 16);
+            _coopMatDimensions["BF16"] = (16, 16, 16);
+            _coopMatDimensions["FP32"] = (16, 16, 16);
+            _coopMatDimensions["INT8"] = (16, 16, 32);
+            _coopMatDimensions["FP8_E4M3"] = (16, 16, 32);
+            _coopMatDimensions["FP8_E5M2"] = (16, 16, 32);
         }
         else if (target == MockGpuTarget.IntelBattlemage)
         {
@@ -390,6 +492,11 @@ public sealed unsafe class VulkanCapabilityProbe
             HasCoopMatrixKHR = true; HasIntelInt4 = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
             HasRayQuery = true; HasRTPipeline = true; HasVideoDecodeVP9 = true; HasVideoEncodeAV1 = true;
+
+            _coopMatDimensions["FP16"] = (8, 8, 16);
+            _coopMatDimensions["BF16"] = (8, 8, 16);
+            _coopMatDimensions["INT8"] = (8, 8, 32);
+            _coopMatDimensions["INT4_INTEL"] = (8, 8, 64);
         }
         else if (target == MockGpuTarget.AmdRdna3)
         {
@@ -403,6 +510,46 @@ public sealed unsafe class VulkanCapabilityProbe
             HasRayQuery = true; HasRTPipeline = true;
             HasVideoDecodeAV1 = true; HasVideoEncodeAV1 = true;
             SubgroupSize = 32;
+
+            _coopMatDimensions["FP16"] = (16, 16, 16);
+            _coopMatDimensions["BF16"] = (16, 16, 16);
+            _coopMatDimensions["INT8"] = (16, 16, 16);
         }
+    }
+
+    /// <summary>
+    /// Dynamically computes matrix operations per invocation from physical hardware tile dimensions (M, N, K)
+    /// queried via vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR.
+    /// Hardware-agnostic across AMD (RDNA 3/4), NVIDIA (Tensor Cores), and Intel (XMX).
+    /// </summary>
+    /// <param name="testId">Unique workload identifier.</param>
+    /// <returns>Calculated hardware operations per invocation.</returns>
+    public double GetMatrixOpsPerInvocation(string testId)
+    {
+        string typeKey = testId switch
+        {
+            "mat_fp16"     => "FP16",
+            "mat_bf16"     => "BF16",
+            "mat_fp32"     => "FP32",
+            "mat_fp64"     => "FP64",
+            "mat_fp8_e4m3" => "FP8_E4M3",
+            "mat_fp8_e5m2" => "FP8_E5M2",
+            "mat_int8"     => "INT8",
+            "mat_int4"     => "INT4_INTEL",
+            "mat_int16"    => "INT16",
+            "mat_int32"    => "INT32",
+            "mat_int64"    => "INT64",
+            _              => "FP16"
+        };
+
+        if (TryGetCoopMatDimensions(typeKey, out int m, out int n, out int k))
+        {
+            // 16 tile iterations per subgroup * (M * N * K * 2 operations per tile)
+            double tileOps = 16.0 * (m * n * k * 2.0);
+            uint sgSize = SubgroupSize > 0 ? SubgroupSize : 32;
+            return tileOps / sgSize;
+        }
+
+        return 4096.0;
     }
 }

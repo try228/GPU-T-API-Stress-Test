@@ -1,529 +1,859 @@
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Slang compute shader generator and cache manager.
-/// Compiles and serves all 15 hardware-targeted compute stress kernels in SPIR-V 1.0 format.
+/// Hardware-accurate compute shader generator targeting SPIR-V 1.0 (ALU and Memory hierarchy)
+/// and SPIR-V 1.3 (Standard VK_KHR_cooperative_matrix).
 /// </summary>
 public static class VulkanShaders
 {
-    /// <summary>
-    /// Thread count per workgroup across general compute shaders.
-    /// </summary>
+    /// <summary>Standard compute workgroup thread count.</summary>
     public const uint LocalSizeX = 64;
 
-    /// <summary>
-    /// Operations performed per thread in the FP32 stress kernel.
-    /// </summary>
+    // Mathematical operations per thread invocation across ALU domains
     public const double FP32_OPS_PER_INVOCATION = 4096.0;
-
-    /// <summary>
-    /// Operations performed per thread in the FP16 Rapid Packed Math stress kernel.
-    /// </summary>
     public const double FP16_OPS_PER_INVOCATION = 8192.0;
-
-    /// <summary>
-    /// Operations performed per thread in the BF16 math stress kernel.
-    /// </summary>
     public const double BF16_OPS_PER_INVOCATION = 4096.0;
+    public const double FP64_OPS_PER_INVOCATION = 1024.0;
 
-    /// <summary>
-    /// Operations performed per thread in the FP64 double precision stress kernel.
-    /// </summary>
-    public const double FP64_OPS_PER_INVOCATION = 2048.0;
-
-    /// <summary>
-    /// Operations performed per thread in the INT32 core integer stress kernel.
-    /// </summary>
     public const double INT32_OPS_PER_INVOCATION = 4096.0;
-
-    /// <summary>
-    /// Operations performed per thread in the INT64 long integer stress kernel.
-    /// </summary>
-    public const double INT64_OPS_PER_INVOCATION = 2048.0;
-
-    /// <summary>
-    /// Operations performed per thread in the INT16 packed short integer stress kernel.
-    /// </summary>
     public const double INT16_OPS_PER_INVOCATION = 8192.0;
+    public const double INT8_OPS_PER_INVOCATION  = 16384.0;
+    public const double INT64_OPS_PER_INVOCATION = 1024.0;
+    public const double DP4A_OPS_PER_INVOCATION  = 4096.0;
+    public const double DP2A_OPS_PER_INVOCATION  = 2048.0;
 
-    /// <summary>
-    /// Operations performed per thread in the INT8 packed byte integer stress kernel.
-    /// </summary>
-    public const double INT8_OPS_PER_INVOCATION = 16384.0;
+    // Fallback constants for Matrix workloads
+    public const double MAT_FP32_OPS_PER_INVOCATION = 4096.0;
+    public const double MAT_FP64_OPS_PER_INVOCATION = 1024.0;
+    public const double MAT_FP16_OPS_PER_INVOCATION = 4096.0;
+    public const double MAT_BF16_OPS_PER_INVOCATION = 4096.0;
+    public const double MAT_FP8_OPS_PER_INVOCATION  = 8192.0;
+    public const double MAT_INT8_OPS_PER_INVOCATION = 4096.0;
+    public const double MAT_INT4_OPS_PER_INVOCATION = 8192.0;
+    public const double MAT_INT16_OPS_PER_INVOCATION = 4096.0;
+    public const double MAT_INT32_OPS_PER_INVOCATION = 4096.0;
+    public const double MAT_INT64_OPS_PER_INVOCATION = 1024.0;
 
-    /// <summary>
-    /// Operations performed per thread in the INT8 DP4A dot product stress kernel.
-    /// </summary>
-    public const double DP4A_OPS_PER_INVOCATION = 16384.0;
+    private static uint[]? _spvInitGpu;
+    private static uint[]? _spvFp32, _spvFp64, _spvFp16, _spvBf16;
+    private static uint[]? _spvInt32, _spvInt64, _spvInt16, _spvInt8;
+    private static uint[]? _spvDp4a, _spvDp2a;
 
-    /// <summary>
-    /// Operations performed per thread in the INT16 DP2A dot product stress kernel.
-    /// </summary>
-    public const double DP2A_OPS_PER_INVOCATION = 8192.0;
+    private static uint[]? _spvMatFp32, _spvMatFp64, _spvMatFp16, _spvMatBf16;
+    private static uint[]? _spvMatFp8E4M3, _spvMatFp8E5M2;
+    private static uint[]? _spvMatInt8, _spvMatInt4, _spvMatInt16, _spvMatInt32, _spvMatInt64;
 
-    /// <summary>
-    /// Cached SPIR-V instruction word buffers.
-    /// </summary>
-    private static uint[]? _spvFp32;
-    private static uint[]? _spvFp64;
-    private static uint[]? _spvFp16;
-    private static uint[]? _spvBf16;
-    private static uint[]? _spvInt32;
-    private static uint[]? _spvInt64;
-    private static uint[]? _spvInt16;
-    private static uint[]? _spvInt8;
-    private static uint[]? _spvDp4a;
-    private static uint[]? _spvDp2a;
-    private static uint[]? _spvMatFp16;
-    private static uint[]? _spvMatBf16;
-    private static uint[]? _spvMatInt8;
-    private static uint[]? _spvMemStream;
-    private static uint[]? _spvPointerChase;
+    private static uint[]? _spvMemL2, _spvMemL3, _spvMemVram, _spvPointerChase;
 
-    /// <summary>
-    /// Retrieves the FP32 single-precision FMA compute shader bytecode.
-    /// </summary>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderFP32() => _spvFp32 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<float> buffer;
-
-        [numthreads(64, 1, 1)]
-        void main(uint3 id : SV_DispatchThreadID)
-        {
-            float acc = buffer[id.x];
-            float a = acc * 0.001f + 1.001f;
-            float b = acc * 0.002f + 1.002f;
-
-            [unroll]
-            for (int i = 0; i < 512; i++)
-            {
-                acc = fma(a, b, acc);
-                a = fma(b, 0.0001f, a);
-                acc = fma(b, a, acc);
-                b = fma(a, 0.0001f, b);
-            }
-            buffer[id.x] = acc;
-        }
-        """);
-
-    /// <summary>
-    /// Retrieves the FP64 double-precision compute shader bytecode.
-    /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderFP64(VulkanCapabilityProbe? probe = null) => _spvFp64 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<double> buffer;
-
-        [numthreads(64, 1, 1)]
-        void main(uint3 id : SV_DispatchThreadID)
-        {
-            double acc = buffer[id.x];
-            double a = acc * 0.00001 + 1.0000001;
-            double b = acc * 0.00002 + 1.0000002;
-
-            [unroll]
-            for (int i = 0; i < 256; i++)
-            {
-                acc = fma(a, b, acc);
-                a = fma(b, 0.00000001, a);
-                acc = fma(b, a, acc);
-                b = fma(a, 0.00000001, b);
-            }
-            buffer[id.x] = acc;
-        }
-        """);
-
-    /// <summary>
-    /// Retrieves the FP16 packed half-precision compute shader bytecode.
-    /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderFP16(VulkanCapabilityProbe? probe = null) => _spvFp16 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<half2> buffer;
-
-        [numthreads(64, 1, 1)]
-        void main(uint3 id : SV_DispatchThreadID)
-        {
-            half2 acc = buffer[id.x];
-            half2 a = acc * half(0.001) + half2(1.001h, 1.001h);
-            half2 b = acc * half(0.002) + half2(1.002h, 1.002h);
-
-            [unroll]
-            for (int i = 0; i < 512; i++)
-            {
-                acc = fma(a, b, acc);
-                a = fma(b, half(0.0001h), a);
-                acc = fma(b, a, acc);
-                b = fma(a, half(0.0001h), b);
-            }
-            buffer[id.x] = acc;
-        }
-        """);
-
-    /// <summary>
-    /// Retrieves the BF16 compute shader bytecode, utilizing native VK_KHR_shader_bfloat16 when supported or packed ALU emulation as fallback.
-    /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderBF16(VulkanCapabilityProbe? probe = null)
+    private static (int M, int N, int K) ResolveCoopMatDims(VulkanCapabilityProbe? probe, string type, int defM, int defN, int defK)
     {
-        bool hasNativeBf16 = probe != null && probe.HasShaderBFloat16;
-
-        if (hasNativeBf16)
-        {
-            return _spvBf16 ??= SlangCompiler.CompileToSpirv("""
-                [[vk::binding(0, 0)]]
-                RWStructuredBuffer<BFloat16> buffer;
-
-                [numthreads(64, 1, 1)]
-                void main(uint3 id : SV_DispatchThreadID)
-                {
-                    float acc = float(buffer[id.x]);
-                    float a = acc * 0.001f + 1.001f;
-                    float b = acc * 0.002f + 1.002f;
-
-                    [unroll]
-                    for (int i = 0; i < 512; i++)
-                    {
-                        acc = fma(a, b, acc);
-                        a = fma(b, 0.0001f, a);
-                        acc = fma(b, a, acc);
-                        b = fma(a, 0.0001f, b);
-                    }
-                    buffer[id.x] = BFloat16(acc);
-                }
-                """);
-        }
-        else
-        {
-            return _spvBf16 ??= SlangCompiler.CompileToSpirv("""
-                [[vk::binding(0, 0)]]
-                RWStructuredBuffer<uint> buffer;
-
-                [numthreads(64, 1, 1)]
-                void main(uint3 id : SV_DispatchThreadID)
-                {
-                    uint acc = buffer[id.x];
-                    uint a = acc ^ 0x3F803F80;
-                    uint b = (acc + 1) ^ 0x3F003F00;
-
-                    [unroll]
-                    for (int i = 0; i < 512; i++)
-                    {
-                        acc = (acc * a) + 0x00100010;
-                        a = a ^ acc;
-                        acc = (acc * b) + 0x00100010;
-                        b = b + acc;
-                    }
-                    buffer[id.x] = acc;
-                }
-                """);
-        }
+        if (probe != null && probe.TryGetCoopMatDimensions(type, out int m, out int n, out int k))
+            return (m, n, k);
+        return (defM, defN, defK);
     }
 
     /// <summary>
-    /// Retrieves the INT32 core arithmetic compute shader bytecode.
+    /// Generates SSBO initialization compute shader.
     /// </summary>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderINT32() => _spvInt32 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<uint> buffer;
-
+    public static uint[] GetShaderInitBuffer() => _spvInitGpu ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            uint acc = buffer[id.x];
-            uint a = acc ^ 1664525u;
-            uint b = (acc + 1) ^ 1013904223u;
-
-            [unroll]
-            for (int i = 0; i < 512; i++)
-            {
-                acc = acc * a + 1013904223u;
-                a ^= acc;
-                acc = acc * b + 1664525u;
-                b += acc;
-            }
-            buffer[id.x] = acc;
+            uint count = 67108864u;
+            buffer[id.x] = (id.x + 1021u) % count;
         }
-        """);
+        """, profile: "spirv_1_0");
 
     /// <summary>
-    /// Retrieves the INT64 wide integer compute shader bytecode.
+    /// Generates FP32 compute shader optimized for dual-issue scalar pipelines.
     /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderINT64(VulkanCapabilityProbe? probe = null) => _spvInt64 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<uint64_t> buffer;
-
+    public static uint[] GetShaderFP32() => _spvFp32 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<float> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            uint64_t acc = buffer[id.x];
-            uint64_t a = acc ^ 6364136223846793005UL;
-            uint64_t b = (acc + 1) ^ 1442695040888963407UL;
+            float s = buffer[id.x];
+            float4 r0 = float4(s, s + 0.1f, s + 0.2f, s + 0.3f);
+            float4 r1 = r0 + 0.1f; float4 r2 = r0 + 0.2f; float4 r3 = r0 + 0.3f;
+            const float a0 = 1.000001f;
+            const float a1 = 1.000005f;
 
-            [unroll]
+            [loop]
+            for (int i = 0; i < 64; i++)
+            {
+                r0 = fma(r0, a0, r1);
+                r2 = fma(r2, a1, r3);
+                r1 = fma(r1, a0, r0);
+                r3 = fma(r3, a1, r2);
+
+                r0 = fma(r0, a1, r2);
+                r1 = fma(r1, a0, r3);
+                r2 = fma(r2, a1, r0);
+                r3 = fma(r3, a0, r1);
+            }
+            buffer[id.x] = r0.x + r1.y + r2.z + r3.w;
+        }
+        """, profile: "spirv_1_0");
+
+    /// <summary>
+    /// Generates packed 16-bit floating point compute shader.
+    /// </summary>
+    public static uint[] GetShaderFP16(VulkanCapabilityProbe? probe = null) => _spvFp16 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<float> buffer;
+        [numthreads(64, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            half s = half(buffer[id.x]);
+            half4 r0 = half4(s, s + 0.1h, s + 0.2h, s + 0.3h);
+            half4 r1 = r0 + 0.1h; half4 r2 = r0 + 0.2h; half4 r3 = r0 + 0.3h;
+            const half a0 = 1.0001h;
+            const half a1 = 1.0005h;
+
+            [loop]
+            for (int i = 0; i < 64; i++)
+            {
+                r0 = fma(r0, a0, r1);
+                r2 = fma(r2, a1, r3);
+                r1 = fma(r1, a0, r0);
+                r3 = fma(r3, a1, r2);
+
+                r0 = fma(r0, a1, r2);
+                r1 = fma(r1, a0, r3);
+                r2 = fma(r2, a1, r0);
+                r3 = fma(r3, a0, r1);
+            }
+            buffer[id.x] = float(r0.x + r1.y + r2.z + r3.w);
+        }
+        """, profile: "spirv_1_0");
+
+    /// <summary>
+    /// Generates true BFloat16 vector dot product compute shader via VK_KHR_shader_bfloat16.
+    /// </summary>
+    public static uint[] GetShaderBF16(VulkanCapabilityProbe? probe = null) => _spvBf16 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<float> buffer;
+        [numthreads(64, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            float s = buffer[id.x];
+            vector<BFloat16, 2> a = vector<BFloat16, 2>(BFloat16(s), BFloat16(s + 0.1f));
+            vector<BFloat16, 2> b = vector<BFloat16, 2>(BFloat16(1.0001f), BFloat16(1.0005f));
+            float acc0 = s;
+            float acc1 = s + 0.1f;
+            float acc2 = s + 0.2f;
+            float acc3 = s + 0.3f;
+
+            [loop]
             for (int i = 0; i < 256; i++)
             {
-                acc = acc * a + 1442695040888963407UL;
-                a ^= acc;
-                acc = acc * b + 6364136223846793005UL;
-                b += acc;
+                acc0 = acc0 + float(dot(a, b));
+                acc1 = acc1 + float(dot(b, a));
+                acc2 = acc2 + float(dot(a, b));
+                acc3 = acc3 + float(dot(b, a));
             }
-            buffer[id.x] = acc;
+            buffer[id.x] = acc0 + acc1 + acc2 + acc3;
         }
-        """);
+        """, profile: "spirv_1_3");
 
     /// <summary>
-    /// Retrieves the INT16 packed short integer compute shader bytecode.
+    /// Generates double precision 64-bit floating point compute shader.
     /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
+    public static uint[] GetShaderFP64(VulkanCapabilityProbe? probe = null) => _spvFp64 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<double> buffer;
+        [numthreads(64, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            double s = buffer[id.x];
+            double2 r0 = double2(s, s + 0.1); double2 r1 = r0 + 0.1;
+            const double a = 1.00000001;
+
+            [loop]
+            for (int i = 128; i > 0; i--)
+            {
+                r0 = fma(r0, a, r1);
+                r1 = fma(r1, a, r0);
+            }
+            buffer[id.x] = r0.x + r1.y;
+        }
+        """, profile: "spirv_1_0");
+
+    /// <summary>
+    /// Generates 32-bit integer compute shader utilizing single-cycle ALU instructions.
+    /// </summary>
+    public static uint[] GetShaderINT32() => _spvInt32 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint> buffer;
+        [numthreads(64, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint s = buffer[id.x];
+            uint4 r0 = uint4(s, s + 1u, s + 2u, s + 3u);
+            uint4 r1 = r0 + 1u; uint4 r2 = r0 + 2u; uint4 r3 = r0 + 3u;
+            const uint a = 1664525u;
+
+            [loop]
+            for (int i = 128; i > 0; i--)
+            {
+                r0 = r0 + r1 + a;
+                r2 = r2 + r3 + a;
+                r1 = r1 + r0 + a;
+                r3 = r3 + r2 + a;
+            }
+            buffer[id.x] = r0.x + r1.y + r2.z + r3.w;
+        }
+        """, profile: "spirv_1_0");
+
+    /// <summary>
+    /// Generates 16-bit integer compute shader.
+    /// </summary>
     public static uint[] GetShaderINT16(VulkanCapabilityProbe? probe = null) => _spvInt16 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<int16_t2> buffer;
-
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            int16_t2 acc = buffer[id.x];
-            int16_t2 a = acc ^ int16_t2(3, 3);
-            int16_t2 b = (acc + 1) ^ int16_t2(7, 7);
+            int16_t s = int16_t(buffer[id.x]);
+            int16_t4 r0 = int16_t4(s, s + 1, s + 2, s + 3);
+            int16_t4 r1 = r0 + 1; int16_t4 r2 = r0 + 2; int16_t4 r3 = r0 + 3;
+            const int16_t a = 13;
 
-            [unroll]
-            for (int i = 0; i < 512; i++)
+            [loop]
+            for (int i = 128; i > 0; i--)
             {
-                acc = acc * a + int16_t2(7, 7);
-                a ^= acc;
-                acc = acc * b + int16_t2(3, 3);
-                b += acc;
+                r0 = r0 * a + r1;
+                r1 = r1 * a + r2;
+                r2 = r2 * a + r3;
+                r3 = r3 * a + r0;
             }
-            buffer[id.x] = acc;
+            buffer[id.x] = int(r0.x + r1.y + r2.z + r3.w);
         }
-        """);
+        """, profile: "spirv_1_0");
 
     /// <summary>
-    /// Retrieves the INT8 packed 4-element byte compute shader bytecode.
+    /// Generates 8-bit integer compute shader.
     /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
     public static uint[] GetShaderINT8(VulkanCapabilityProbe? probe = null) => _spvInt8 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<uint8_t4> buffer;
-
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            uint8_t4 acc = buffer[id.x];
-            uint8_t4 a = acc ^ uint8_t4(3, 3, 3, 3);
-            uint8_t4 b = (acc + 1) ^ uint8_t4(7, 7, 7, 7);
+            uint8_t s = uint8_t(buffer[id.x]);
+            uint8_t4 r0 = uint8_t4(s, s + 1, s + 2, s + 3);
+            uint8_t4 r1 = r0 + 1; uint8_t4 r2 = r0 + 2; uint8_t4 r3 = r0 + 3;
+            const uint8_t a = 5;
 
-            [unroll]
-            for (int i = 0; i < 512; i++)
+            [loop]
+            for (int i = 128; i > 0; i--)
             {
-                acc = acc * a + uint8_t4(7, 7, 7, 7);
-                a ^= acc;
-                acc = acc * b + uint8_t4(3, 3, 3, 3);
-                b += acc;
+                r0 = r0 * a + r1;
+                r1 = r1 * a + r2;
+                r2 = r2 * a + r3;
+                r3 = r3 * a + r0;
             }
-            buffer[id.x] = acc;
+            buffer[id.x] = uint(r0.x + r1.y + r2.z + r3.w);
         }
-        """);
+        """, profile: "spirv_1_0");
 
     /// <summary>
-    /// Retrieves the INT8 DP4A hardware dot product and accumulation compute shader bytecode.
+    /// Generates 64-bit integer compute shader.
     /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
+    public static uint[] GetShaderINT64(VulkanCapabilityProbe? probe = null) => _spvInt64 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint64_t> buffer;
+        [numthreads(64, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint64_t s = buffer[id.x];
+            uint64_t r0 = s; uint64_t r1 = s + 1UL;
+            const uint64_t a = 6364136223846793005UL;
+
+            [loop]
+            for (int i = 128; i > 0; i--)
+            {
+                r0 = r0 * a + r1;
+                r1 = r1 * a + r0;
+            }
+            buffer[id.x] = r0 + r1;
+        }
+        """, profile: "spirv_1_0");
+
+    /// <summary>
+    /// Generates INT8 DP4A packed dot product compute shader.
+    /// </summary>
     public static uint[] GetShaderDP4A(VulkanCapabilityProbe? probe = null) => _spvDp4a ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<int> buffer;
-
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            int acc = buffer[id.x];
-            int a = acc ^ 0x01020304;
-            int b = (acc + 1) ^ 0x05060708;
+            int s = buffer[id.x];
+            int4 acc0 = int4(s, s + 1, s + 2, s + 3);
+            int4 acc1 = acc0 + 1;
+            int a = 0x01020304;
+            int b = 0x05060708;
 
-            [unroll]
-            for (int i = 0; i < 512; i++)
+            [loop]
+            for (int i = 128; i > 0; i--)
             {
-                acc = dot4add_i8packed(a, b, acc);
-                a = a ^ acc;
-                acc = dot4add_i8packed(b, a, acc);
-                b = b + acc;
-                acc = dot4add_i8packed(a, b, acc);
-                a = a + 0x01010101;
-                acc = dot4add_i8packed(b, a, acc);
+                acc0.x = dot4add_i8packed(a, b, acc1.y);
+                acc0.y = dot4add_i8packed(a, b, acc1.z);
+                acc1.x = dot4add_i8packed(a, b, acc0.y);
+                acc1.y = dot4add_i8packed(a, b, acc0.x);
             }
-            buffer[id.x] = acc;
+            buffer[id.x] = acc0.x + acc0.y + acc1.x + acc1.y;
         }
-        """);
+        """, profile: "spirv_1_0");
 
     /// <summary>
-    /// Retrieves the INT16 DP2A dual-multiply-accumulate compute shader bytecode.
+    /// Generates INT16 DP2A packed dot product compute shader.
     /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
     public static uint[] GetShaderDP2A(VulkanCapabilityProbe? probe = null) => _spvDp2a ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<int> buffer;
-
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int> buffer;
         int dp2a_s16(int a, int b, int acc)
         {
-            int a_lo = (a << 16) >> 16;
-            int a_hi = a >> 16;
-            int b_lo = (b << 16) >> 16;
-            int b_hi = b >> 16;
+            int a_lo = (a << 16) >> 16; int a_hi = a >> 16;
+            int b_lo = (b << 16) >> 16; int b_hi = b >> 16;
             return acc + (a_lo * b_lo + a_hi * b_hi);
         }
-
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            int acc = buffer[id.x];
-            int a = acc ^ 0x00030003;
-            int b = (acc + 1) ^ 0x00070007;
+            int s = buffer[id.x];
+            int4 acc0 = int4(s, s + 1, s + 2, s + 3);
+            int a = 0x00030003;
+            int b = 0x00070007;
 
-            [unroll]
-            for (int i = 0; i < 512; i++)
+            [loop]
+            for (int i = 128; i > 0; i--)
             {
-                acc = dp2a_s16(a, b, acc);
-                a = a ^ acc;
-                acc = dp2a_s16(b, a, acc);
-                b = b + acc;
-                acc = dp2a_s16(a, b, acc);
-                a = a + 0x00010001;
-                acc = dp2a_s16(b, a, acc);
+                acc0.x = dp2a_s16(a, b, acc0.y);
+                acc0.y = dp2a_s16(a, b, acc0.z);
+                acc0.z = dp2a_s16(a, b, acc0.w);
+                acc0.w = dp2a_s16(a, b, acc0.x);
             }
-            buffer[id.x] = acc;
+            buffer[id.x] = acc0.x + acc0.y + acc0.z + acc0.w;
         }
-        """);
+        """, profile: "spirv_1_0");
 
-    /// <summary>
-    /// Retrieves the Matrix FP16 tensor GEMM compute shader bytecode.
-    /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderMatFP16(VulkanCapabilityProbe? probe = null) => _spvMatFp16 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<float> buffer;
+    // =========================================================================
+    // Standard KHR Cooperative Matrix Shaders (VK_KHR_cooperative_matrix)
+    // =========================================================================
+
+    public static uint[] GetShaderMatFP16(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatFp16 != null) return _spvMatFp16;
+        var (m, n, k) = ResolveCoopMatDims(probe, "FP16", 16, 16, 16);
+
+        return _spvMatFp16 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<half> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<half> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<half> bufferC;
+
+        typealias MatA = linalg::CoopMat<half, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<half, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<half, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0.0h);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatBF16(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatBf16 != null) return _spvMatBf16;
+        var (m, n, k) = ResolveCoopMatDims(probe, "BF16", 16, 16, 16);
+
+        return _spvMatBf16 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<BFloat16> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<BFloat16> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<float> bufferC;
+
+        typealias MatA = linalg::CoopMat<BFloat16, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<BFloat16, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<float, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0.0f);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatINT8(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatInt8 != null) return _spvMatInt8;
+        var (m, n, k) = ResolveCoopMatDims(probe, "INT8", 16, 16, 16);
+
+        return _spvMatInt8 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int8_t> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<int8_t> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<int> bufferC;
+
+        typealias MatA = linalg::CoopMat<int8_t, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<int8_t, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<int, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatFP32(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatFp32 != null) return _spvMatFp32;
+        var (m, n, k) = ResolveCoopMatDims(probe, "FP32", 16, 16, 16);
+
+        return _spvMatFp32 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<float> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<float> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<float> bufferC;
+
+        typealias MatA = linalg::CoopMat<float, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<float, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<float, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0.0f);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatFP64(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatFp64 != null) return _spvMatFp64;
+        var (m, n, k) = ResolveCoopMatDims(probe, "FP64", 8, 8, 4);
+
+        return _spvMatFp64 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<double> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<double> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<double> bufferC;
+
+        typealias MatA = linalg::CoopMat<double, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<double, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<double, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0.0);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatFP8_E4M3(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatFp8E4M3 != null) return _spvMatFp8E4M3;
+        var (m, n, k) = ResolveCoopMatDims(probe, "FP8_E4M3", 16, 16, 32);
+
+        return _spvMatFp8E4M3 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<FloatE4M3> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<FloatE4M3> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<float> bufferC;
+
+        typealias MatA = linalg::CoopMat<FloatE4M3, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<FloatE4M3, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<float, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0.0f);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatFP8_E5M2(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatFp8E5M2 != null) return _spvMatFp8E5M2;
+        var (m, n, k) = ResolveCoopMatDims(probe, "FP8_E5M2", 16, 16, 32);
+
+        return _spvMatFp8E5M2 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<FloatE5M2> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<FloatE5M2> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<float> bufferC;
+
+        typealias MatA = linalg::CoopMat<FloatE5M2, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<FloatE5M2, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<float, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0.0f);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatINT4(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatInt4 != null) return _spvMatInt4;
+
+        return _spvMatInt4 = SlangCompiler.CompileToSpirv("""
+        #pragma spirv extension "SPV_INTEL_int4"
+        #pragma spirv capability Int4TypeINTEL
+        #pragma spirv capability Int4CooperativeMatrixINTEL
+
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<uint> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<int> bufferC;
+
+        typealias MatA = linalg::CoopMat<int4_t, MemoryScope.Subgroup, 8, 64, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<int4_t, MemoryScope.Subgroup, 64, 8, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<int, MemoryScope.Subgroup, 8, 8, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
 
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            float acc = buffer[id.x];
-            float a = acc * 0.001f + 1.001f;
-            float b = acc * 0.002f + 1.002f;
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * 8 * 8) & 0x0001FFFFu;
 
-            [unroll]
-            for (int i = 0; i < 1024; i++)
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, 64);
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, 8);
+            MatC acc;
+            acc.fill(0);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, 8);
+        }
+        """, profile: "spirv_1_3", extraArgs: "-capability Int4CooperativeMatrixINTEL");
+    }
+
+    public static uint[] GetShaderMatINT16(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatInt16 != null) return _spvMatInt16;
+        var (m, n, k) = ResolveCoopMatDims(probe, "INT16", 16, 16, 16);
+
+        return _spvMatInt16 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int16_t> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<int16_t> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<int> bufferC;
+
+        typealias MatA = linalg::CoopMat<int16_t, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<int16_t, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<int, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatINT32(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatInt32 != null) return _spvMatInt32;
+        var (m, n, k) = ResolveCoopMatDims(probe, "INT32", 16, 16, 16);
+
+        return _spvMatInt32 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<int> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<int> bufferC;
+
+        typealias MatA = linalg::CoopMat<int, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<int, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<int, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    public static uint[] GetShaderMatINT64(VulkanCapabilityProbe? probe = null)
+    {
+        if (_spvMatInt64 != null) return _spvMatInt64;
+        var (m, n, k) = ResolveCoopMatDims(probe, "INT64", 8, 8, 4);
+
+        return _spvMatInt64 = SlangCompiler.CompileToSpirv($$"""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<int64_t> bufferA;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<int64_t> bufferB;
+        [[vk::binding(2, 0)]] RWStructuredBuffer<int64_t> bufferC;
+
+        typealias MatA = linalg::CoopMat<int64_t, MemoryScope.Subgroup, {{m}}, {{k}}, linalg::CoopMatMatrixUse.MatrixA>;
+        typealias MatB = linalg::CoopMat<int64_t, MemoryScope.Subgroup, {{k}}, {{n}}, linalg::CoopMatMatrixUse.MatrixB>;
+        typealias MatC = linalg::CoopMat<int64_t, MemoryScope.Subgroup, {{m}}, {{n}}, linalg::CoopMatMatrixUse.MatrixAccumulator>;
+
+        [ForceInline]
+        MatC coopMma(MatA a, MatB b, MatC c)
+        {
+            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+        }
+
+        [numthreads({{LocalSizeX}}, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint sgIdx = id.x / WaveGetLaneCount();
+            uint outOffset = (sgIdx * {{m}} * {{n}}) & 0x0001FFFFu;
+
+            MatA matA = MatA.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferA, 0, {{k}});
+            MatB matB = MatB.Load<linalg::CoopMatMatrixLayout.RowMajor>(bufferB, 0, {{n}});
+            MatC acc;
+            acc.fill(0L);
+
+            [loop]
+            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+
+            acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, {{n}});
+        }
+        """, profile: "spirv_1_3");
+    }
+
+    // =========================================================================
+    // Cache & Physical VRAM Bus Streaming
+    // =========================================================================
+
+    public static uint[] GetShaderL2Cache() => _spvMemL2 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint4> buffer;
+        [numthreads(64, 1, 1)]
+        void main(uint3 id : SV_DispatchThreadID)
+        {
+            uint idx = id.x & 0x0002FFFFu;
+            uint4 v = buffer[idx];
+
+            [loop]
+            for (int i = 0; i < 32; i++)
             {
-                acc = fma(a, b, acc);
-                a = fma(b, 0.0001f, a);
-                acc = fma(b, a, acc);
-                b = fma(a, 0.0001f, b);
+                v += buffer[(idx + i) & 0x0002FFFFu];
             }
-            buffer[id.x] = acc;
+            buffer[idx] = v;
         }
-        """);
+        """, profile: "spirv_1_0");
 
-    /// <summary>
-    /// Retrieves the Matrix BF16 tensor GEMM compute shader bytecode.
-    /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderMatBF16(VulkanCapabilityProbe? probe = null) => _spvMatBf16 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<float> buffer;
-
+    public static uint[] GetShaderL3Cache() => _spvMemL3 ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint4> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            float acc = buffer[id.x];
-            float a = acc * 0.001f + 1.005f;
-            float b = acc * 0.002f + 1.003f;
+            uint idx = id.x & 0x001FFFFFu;
+            uint4 v = buffer[idx];
 
-            [unroll]
-            for (int i = 0; i < 1024; i++)
+            [loop]
+            for (int i = 0; i < 16; i++)
             {
-                acc = fma(a, b, acc);
-                a = fma(b, 0.0001f, a);
-                acc = fma(b, a, acc);
-                b = fma(a, 0.0001f, b);
+                v += buffer[(idx + (i * 1024)) & 0x001FFFFFu];
             }
-            buffer[id.x] = acc;
+            buffer[idx] = v;
         }
-        """);
+        """, profile: "spirv_1_0");
 
-    /// <summary>
-    /// Retrieves the Matrix INT8 tensor GEMM compute shader bytecode.
-    /// </summary>
-    /// <param name="probe">Capability probe metadata.</param>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderMatINT8(VulkanCapabilityProbe? probe = null) => _spvMatInt8 ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<int> buffer;
+    public static uint[] GetShaderMem() => _spvMemVram ??= SlangCompiler.CompileToSpirv("""
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint4> bufferIn;
+        [[vk::binding(1, 0)]] RWStructuredBuffer<uint4> bufferOut;
 
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            int acc = buffer[id.x];
-            int a = acc ^ 12345;
-            int b = (acc + 1) ^ 67890;
+            const uint stride = 2097152u;
+            uint idx = id.x;
 
-            [unroll]
-            for (int i = 0; i < 1024; i++)
-            {
-                acc += (a * b);
-                a ^= acc;
-                acc += (b * a);
-                b += acc;
-            }
-            buffer[id.x] = acc;
+            uint4 v0 = bufferIn[idx];
+            uint4 v1 = bufferIn[idx + stride];
+            uint4 v2 = bufferIn[idx + stride * 2u];
+            uint4 v3 = bufferIn[idx + stride * 3u];
+
+            bufferOut[idx] = v0 + 1u;
+            bufferOut[idx + stride] = v1 + 1u;
+            bufferOut[idx + stride * 2u] = v2 + 1u;
+            bufferOut[idx + stride * 3u] = v3 + 1u;
         }
-        """);
+        """, profile: "spirv_1_0");
 
-    /// <summary>
-    /// Retrieves the VRAM and cache streaming bandwidth benchmark shader bytecode.
-    /// </summary>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
-    public static uint[] GetShaderMem() => _spvMemStream ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<float> buffer;
-
-        [numthreads(64, 1, 1)]
-        void main(uint3 id : SV_DispatchThreadID)
-        {
-            float val = buffer[id.x];
-            buffer[id.x] = val + 1.0f;
-        }
-        """);
-
-    /// <summary>
-    /// Retrieves the pointer chasing memory latency benchmark shader bytecode.
-    /// </summary>
-    /// <returns>Compiled SPIR-V bytecode.</returns>
     public static uint[] GetShaderLatency() => _spvPointerChase ??= SlangCompiler.CompileToSpirv("""
-        [[vk::binding(0, 0)]]
-        RWStructuredBuffer<uint> buffer;
-
-        [numthreads(64, 1, 1)]
+        [[vk::binding(0, 0)]] RWStructuredBuffer<uint> buffer;
+        [numthreads(1, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            uint ptr = buffer[id.x];
-            [unroll]
-            for (int i = 0; i < 1024; i++)
+            uint ptr = buffer[0];
+            [loop]
+            for (int k = 0; k < 256; k++)
             {
                 ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
+                ptr = buffer[ptr & 0x01FFFFFFu];
             }
-            buffer[id.x] = ptr;
+            buffer[0] = ptr;
         }
-        """);
+        """, profile: "spirv_1_0");
 }

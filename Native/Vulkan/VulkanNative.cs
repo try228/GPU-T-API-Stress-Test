@@ -8,9 +8,13 @@ namespace GPU_T.StressTest.Native.Vulkan;
 /// </summary>
 public static class VulkanConstants
 {
-    // Instance & Physical Device Properties 2 (Vulkan 1.0 KHR)
+    // Instance & Physical Device Properties 2
     public const StructureType StructureTypePhysicalDeviceFeatures2KHR = (StructureType)1000059000;
     public const StructureType StructureTypePhysicalDeviceProperties2KHR = (StructureType)1000059001;
+
+    // 16-Bit Storage & 8-Bit Storage
+    public const StructureType StructureTypePhysicalDevice16BitStorageFeaturesKHR = (StructureType)1000083000;
+    public const StructureType StructureTypePhysicalDevice8BitStorageFeaturesKHR = (StructureType)1000177000;
 
     // BFloat16 (VK_KHR_shader_bfloat16)
     public const StructureType StructureTypePhysicalDeviceShaderBfloat16FeaturesKHR = (StructureType)1000141000;
@@ -18,8 +22,8 @@ public static class VulkanConstants
     // Vulkan Memory Model (VK_KHR_vulkan_memory_model)
     public const StructureType StructureTypePhysicalDeviceVulkanMemoryModelFeaturesKHR = (StructureType)1000211000;
 
-    // Subgroup Size Control (VK_EXT_subgroup_size_control)
-    public const StructureType StructureTypePhysicalDeviceSubgroupSizeControlFeaturesEXT = (StructureType)1000225000;
+    // Subgroup Size Control (VK_EXT_subgroup_size_control): Features is 1000225002 (1000225000 is Properties!)
+    public const StructureType StructureTypePhysicalDeviceSubgroupSizeControlFeaturesEXT = (StructureType)1000225002;
 
     // Performance Query (VK_KHR_performance_query)
     public const StructureType StructureTypePhysicalDevicePerformanceQueryFeaturesKHR = (StructureType)1000116000;
@@ -46,7 +50,7 @@ public static class VulkanConstants
     public const StructureType StructureTypePhysicalDeviceRayQueryFeaturesKHR = (StructureType)1000348013;
     public const StructureType StructureTypePhysicalDeviceRayTracingPipelineFeaturesKHR = (StructureType)1000347000;
     public const StructureType StructureTypePhysicalDeviceRayTracingInvocationReorderFeaturesNV = (StructureType)1000490000;
-    public const StructureType StructureTypePhysicalDeviceOpacityMicromapFeaturesEXT = (StructureType)1000396000;
+    public const StructureType StructureTypeOpacityMicromapFeaturesEXT = (StructureType)1000396000;
     public const StructureType StructureTypePhysicalDeviceRayTracingPositionFetchFeaturesKHR = (StructureType)1000481000;
 
     // Float8 (VK_EXT_shader_float8)
@@ -59,6 +63,28 @@ public unsafe struct VkPhysicalDeviceFeatures2KHR
     public StructureType sType;
     public void* pNext;
     public PhysicalDeviceFeatures features;
+    private uint _pad;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]
+public unsafe struct VkPhysicalDevice16BitStorageFeaturesKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint storageBuffer16BitAccess;
+    public uint uniformAndStorageBuffer16BitAccess;
+    public uint storagePushConstant16;
+    public uint storageInputOutput16;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]
+public unsafe struct VkPhysicalDevice8BitStorageFeaturesKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint storageBuffer8BitAccess;
+    public uint uniformAndStorageBuffer8BitAccess;
+    public uint storagePushConstant8;
     private uint _pad;
 }
 

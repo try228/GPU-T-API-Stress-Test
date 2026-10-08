@@ -49,7 +49,7 @@ public sealed class VulkanTestRegistry
         // 1. COMPUTE ALU: FLOATING POINT
         Items.Add(new("alu_fp32", "FP32 Core FMA",     "ALU (FLOAT)", true, "TFLOPS", defaultChecked: true));
         Items.Add(new("alu_fp16", "FP16 Packed Math",  "ALU (FLOAT)", probe.HasFloat16, "TFLOPS"));
-        Items.Add(new("alu_bf16", "BF16 Shader Math",  "ALU (FLOAT)", probe.HasShaderBFloat16, "TFLOPS"));
+        Items.Add(new("alu_bf16", "BF16 Dot Product",  "ALU (FLOAT)", probe.HasShaderBFloat16, "TFLOPS"));
         Items.Add(new("alu_fp64", "FP64 Double Prec.", "ALU (FLOAT)", probe.HasFloat64, "GFLOPS"));
 
         // 2. COMPUTE ALU: INTEGER & DOT PRODUCT
