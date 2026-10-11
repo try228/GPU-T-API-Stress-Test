@@ -26,10 +26,55 @@ public enum MockGpuTarget
 }
 
 /// <summary>
-/// Hardware capability prober discovering cache hierarchy and ISA support.
+/// Hardware capability prober discovering cache hierarchy, extension features, and ISA support.
+/// Queries physical silicon capabilities using standard Vulkan Features2 chaining.
 /// </summary>
 public sealed unsafe class VulkanCapabilityProbe
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VkPhysicalDeviceShaderBfloat16FeaturesKHR
+    {
+        public StructureType sType;
+        public void* pNext;
+        public uint shaderBFloat16Type;
+        public uint shaderBFloat16DotProduct;
+        public uint shaderBFloat16CooperativeMatrix;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VkPhysicalDeviceShaderFloat16Int8FeaturesKHR
+    {
+        public StructureType sType;
+        public void* pNext;
+        public uint shaderFloat16;
+        public uint shaderInt8;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VkPhysicalDeviceShaderFloat8FeaturesEXT
+    {
+        public StructureType sType;
+        public void* pNext;
+        public uint shaderFloat8;
+        public uint shaderFloat8CooperativeMatrix;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct VkCooperativeMatrixPropertiesKHR
+    {
+        public StructureType sType;
+        public void* pNext;
+        public uint MSize;
+        public uint NSize;
+        public uint KSize;
+        public ComponentTypeKHR AType;
+        public ComponentTypeKHR BType;
+        public ComponentTypeKHR CType;
+        public ComponentTypeKHR ResultType;
+        public Silk.NET.Core.Bool32 saturatingAccumulation;
+        public ScopeKHR scope;
+    }
+
     private readonly record struct CacheRule(string Pattern, uint L2Kb, uint L3Kb);
 
     private static readonly string[] SoftwareRenderers = ["LLVMPIPE", "LAVAPIPE", "SWIFTSHADER", "VK-GL-CTS"];
@@ -113,8 +158,6 @@ public sealed unsafe class VulkanCapabilityProbe
     ];
 
     private readonly HashSet<string> _supportedExtensions = new(StringComparer.OrdinalIgnoreCase);
-
-    // Хранилище обнаруженных аппаратных размеров тайлов для каждого типа данных
     private readonly Dictionary<string, (int M, int N, int K)> _coopMatDimensions = new(StringComparer.OrdinalIgnoreCase);
 
     public uint VendorId { get; private set; }
@@ -132,9 +175,12 @@ public sealed unsafe class VulkanCapabilityProbe
     public bool HasInt64 { get; private set; }
     public bool HasIntegerDotProduct { get; private set; }
 
+    public bool HasDotProduct16Bit { get; private set; }
+
     public bool HasBFloat16Extension { get; private set; }
     public bool HasShaderBFloat16 { get; private set; }
     public bool HasBFloat16DotProduct { get; private set; }
+    public bool HasShaderBFloat16CooperativeMatrix { get; private set; }
 
     public bool HasCoopMatrixKHR { get; private set; }
     public bool HasCoopMatrixNV { get; private set; }
@@ -170,10 +216,13 @@ public sealed unsafe class VulkanCapabilityProbe
     public bool HasVideoEncodeH265 { get; private set; }
     public bool HasVideoEncodeAV1 { get; private set; }
 
+    /// <summary>
+    /// Checks whether a specific Vulkan device extension was reported by the physical driver.
+    /// </summary>
     public bool IsExtensionSupported(string extensionName) => _supportedExtensions.Contains(extensionName);
 
     /// <summary>
-    /// Возвращает физически поддерживаемые аппаратные размеры матрицы (M, N, K) для заданного типа.
+    /// Retrieves physically supported matrix tile dimensions (M, N, K) for the given numerical type.
     /// </summary>
     public bool TryGetCoopMatDimensions(string type, out int m, out int n, out int k)
     {
@@ -185,7 +234,6 @@ public sealed unsafe class VulkanCapabilityProbe
             return true;
         }
 
-        // Для Intel INT4 XMX дефолтный аппаратный тайл
         if (string.Equals(type, "INT4_INTEL", StringComparison.OrdinalIgnoreCase) && HasIntelInt4)
         {
             m = 8; n = 8; k = 64;
@@ -271,9 +319,29 @@ public sealed unsafe class VulkanCapabilityProbe
             if (!string.IsNullOrEmpty(name)) _supportedExtensions.Add(name);
         }
 
-        HasFloat16 = _supportedExtensions.Contains("VK_KHR_shader_float16_int8");
-        HasInt8 = _supportedExtensions.Contains("VK_KHR_shader_float16_int8");
         HasIntegerDotProduct = _supportedExtensions.Contains("VK_KHR_shader_integer_dot_product");
+        if (HasIntegerDotProduct)
+        {
+            PhysicalDeviceShaderIntegerDotProductPropertiesKHR dotProps = new()
+            {
+                SType = StructureType.PhysicalDeviceShaderIntegerDotProductPropertiesKhr
+            };
+
+            PhysicalDeviceProperties2 props2 = new()
+            {
+                SType = StructureType.PhysicalDeviceProperties2,
+                PNext = &dotProps
+            };
+
+            vk.GetPhysicalDeviceProperties2(physicalDevice, &props2);
+
+            HasDotProduct16Bit = dotProps.IntegerDotProduct16BitSignedAccelerated.Value != 0;
+        }
+        else
+        {
+            HasDotProduct16Bit = false;
+        }
+
         HasBFloat16Extension = _supportedExtensions.Contains("VK_KHR_shader_bfloat16");
         HasFloat8 = _supportedExtensions.Contains("VK_EXT_shader_float8");
 
@@ -281,7 +349,6 @@ public sealed unsafe class VulkanCapabilityProbe
         HasCoopMatrixNV = _supportedExtensions.Contains("VK_NV_cooperative_matrix");
         HasCoopMatrixNV2 = _supportedExtensions.Contains("VK_NV_cooperative_matrix2");
 
-        // Intel INT4 requires VK_KHR_cooperative_matrix on Intel hardware (Vendor 0x8086)
         HasIntelInt4 = (VendorId == 0x8086) && HasCoopMatrixKHR;
 
         HasRayQuery = _supportedExtensions.Contains("VK_KHR_ray_query");
@@ -307,8 +374,71 @@ public sealed unsafe class VulkanCapabilityProbe
         HasFloat64 = features.ShaderFloat64;
         HasInt64 = features.ShaderInt64;
         HasInt16 = features.ShaderInt16;
-        HasShaderBFloat16 = HasBFloat16Extension;
-        HasBFloat16DotProduct = HasBFloat16Extension;
+
+        // Query Float16 and Int8 hardware execution
+        if (_supportedExtensions.Contains("VK_KHR_shader_float16_int8"))
+        {
+            VkPhysicalDeviceShaderFloat16Int8FeaturesKHR f16i8Feat = default;
+            f16i8Feat.sType = (StructureType)1000082000;
+
+            PhysicalDeviceFeatures2 feat2 = default;
+            feat2.SType = StructureType.PhysicalDeviceFeatures2;
+            feat2.PNext = &f16i8Feat;
+
+            vk.GetPhysicalDeviceFeatures2(physicalDevice, &feat2);
+
+            HasFloat16 = f16i8Feat.shaderFloat16 == 1u;
+            HasInt8 = f16i8Feat.shaderInt8 == 1u;
+        }
+        else
+        {
+            HasFloat16 = false;
+            HasInt8 = false;
+        }
+
+        // Query BFloat16 hardware capabilities
+        // RADV returns shaderBFloat16DotProduct == 0 even with RADV_EXPERIMENTAL=bfloat16
+        if (HasBFloat16Extension)
+        {
+            VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16Feat = default;
+            bf16Feat.sType = (StructureType)1000570000;
+
+            PhysicalDeviceFeatures2 feat2 = default;
+            feat2.SType = StructureType.PhysicalDeviceFeatures2;
+            feat2.PNext = &bf16Feat;
+
+            vk.GetPhysicalDeviceFeatures2(physicalDevice, &feat2);
+
+            HasShaderBFloat16 = bf16Feat.shaderBFloat16Type == 1u;
+            HasBFloat16DotProduct = bf16Feat.shaderBFloat16DotProduct == 1u;
+            HasShaderBFloat16CooperativeMatrix = bf16Feat.shaderBFloat16CooperativeMatrix == 1u;
+        }
+        else
+        {
+            HasShaderBFloat16 = false;
+            HasBFloat16DotProduct = false;
+            HasShaderBFloat16CooperativeMatrix = false;
+        }
+
+        // Query Float8 hardware capabilities
+        if (HasFloat8)
+        {
+            VkPhysicalDeviceShaderFloat8FeaturesEXT fp8Feat = default;
+            fp8Feat.sType = (StructureType)1000588000;
+
+            PhysicalDeviceFeatures2 feat2 = default;
+            feat2.SType = StructureType.PhysicalDeviceFeatures2;
+            feat2.PNext = &fp8Feat;
+
+            vk.GetPhysicalDeviceFeatures2(physicalDevice, &feat2);
+
+            HasFloat8 = fp8Feat.shaderFloat8 == 1u;
+            if (fp8Feat.shaderFloat8CooperativeMatrix == 0u)
+            {
+                HasMatFP8_E4M3 = false;
+                HasMatFP8_E5M2 = false;
+            }
+        }
     }
 
     private void ProbeMatrixCapabilities(Vk vk, PhysicalDevice physicalDevice, Instance instance)
@@ -375,7 +505,7 @@ public sealed unsafe class VulkanCapabilityProbe
             catch { }
         }
 
-        // Fallback если функция не вызвалась, но флаг есть
+        // Fallback profile if cooperative matrix query is unavailable
         if (HasCoopMatrixKHR || HasCoopMatrixNV)
         {
             HasMatFP16 = HasFloat16;
@@ -434,8 +564,8 @@ public sealed unsafe class VulkanCapabilityProbe
                 uint val = (uint)type;
                 if (val == 1000141000 || val == 1000141001)
                 {
-                    HasMatBF16 = true;
-                    key = "BF16";
+                HasMatBF16 = true;
+                key = "BF16";
                 }
                 else if (val == 1000491002)
                 {
@@ -468,7 +598,8 @@ public sealed unsafe class VulkanCapabilityProbe
             DeviceType = PhysicalDeviceType.DiscreteGpu;
             L2CacheSizeBytes = 128 * 1024 * 1024; L3CacheSizeBytes = 0;
             HasFloat16 = true; HasInt8 = true; HasIntegerDotProduct = true;
-            HasBFloat16Extension = true; HasShaderBFloat16 = true; HasBFloat16DotProduct = true; HasFloat8 = true;
+            HasBFloat16Extension = true; HasShaderBFloat16 = true; HasBFloat16DotProduct = true;
+            HasShaderBFloat16CooperativeMatrix = true; HasFloat8 = true;
             HasCoopMatrixKHR = true; HasCoopMatrixNV = true; HasCoopMatrixNV2 = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
             HasMatFP8_E4M3 = true; HasMatFP8_E5M2 = true;
@@ -489,6 +620,7 @@ public sealed unsafe class VulkanCapabilityProbe
             L2CacheSizeBytes = 16 * 1024 * 1024; L3CacheSizeBytes = 0;
             HasFloat16 = true; HasInt8 = true; HasIntegerDotProduct = true;
             HasBFloat16Extension = true; HasShaderBFloat16 = true;
+            HasShaderBFloat16CooperativeMatrix = true;
             HasCoopMatrixKHR = true; HasIntelInt4 = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
             HasRayQuery = true; HasRTPipeline = true; HasVideoDecodeVP9 = true; HasVideoEncodeAV1 = true;
@@ -505,6 +637,8 @@ public sealed unsafe class VulkanCapabilityProbe
             L2CacheSizeBytes = 6 * 1024 * 1024; L3CacheSizeBytes = 64 * 1024 * 1024;
             HasFloat16 = true; HasInt8 = true; HasIntegerDotProduct = true;
             HasBFloat16Extension = true; HasShaderBFloat16 = true;
+            HasBFloat16DotProduct = false; // Physically absent on RDNA 3 / RADV
+            HasShaderBFloat16CooperativeMatrix = true;
             HasCoopMatrixKHR = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
             HasRayQuery = true; HasRTPipeline = true;
@@ -544,7 +678,6 @@ public sealed unsafe class VulkanCapabilityProbe
 
         if (TryGetCoopMatDimensions(typeKey, out int m, out int n, out int k))
         {
-            // 16 tile iterations per subgroup * (M * N * K * 2 operations per tile)
             double tileOps = 16.0 * (m * n * k * 2.0);
             uint sgSize = SubgroupSize > 0 ? SubgroupSize : 32;
             return tileOps / sgSize;

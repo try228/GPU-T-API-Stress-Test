@@ -274,62 +274,88 @@ public static class VulkanShaders
         }
         """, profile: "spirv_1_0");
 
-    /// <summary>
-    /// Generates INT8 DP4A packed dot product compute shader.
+   /// <summary>
+    /// Generates hardware INT8 DP4A packed dot product compute shader targeting native v_dot4_i32_iu8 on RDNA 3.
+    /// Hardened against NIR/ACO constant folding via dynamic input dependency.
     /// </summary>
     public static uint[] GetShaderDP4A(VulkanCapabilityProbe? probe = null) => _spvDp4a ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<int> buffer;
+
+        [ForceInline]
+        int dp4a_hardware(int a, int b, int acc)
+        {
+            int dotResult = spirv_asm {
+                OpCapability DotProductKHR;
+                OpCapability DotProductInput4x8BitPackedKHR;
+                OpExtension "SPV_KHR_integer_dot_product";
+                result:$$int = OpSDotKHR $a $b 0;
+            };
+            return dotResult + acc;
+        }
+
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
             int s = buffer[id.x];
             int4 acc0 = int4(s, s + 1, s + 2, s + 3);
             int4 acc1 = acc0 + 1;
-            int a = 0x01020304;
-            int b = 0x05060708;
+
+            int a = s ^ 0x01020304;
+            int b = (s + 1) ^ 0x05060708;
 
             [loop]
             for (int i = 128; i > 0; i--)
             {
-                acc0.x = dot4add_i8packed(a, b, acc1.y);
-                acc0.y = dot4add_i8packed(a, b, acc1.z);
-                acc1.x = dot4add_i8packed(a, b, acc0.y);
-                acc1.y = dot4add_i8packed(a, b, acc0.x);
+                acc0.x = dp4a_hardware(a, b, acc1.y);
+                acc0.y = dp4a_hardware(a, b, acc1.z);
+                acc1.x = dp4a_hardware(a, b, acc0.y);
+                acc1.y = dp4a_hardware(a, b, acc0.x);
             }
+
             buffer[id.x] = acc0.x + acc0.y + acc1.x + acc1.y;
         }
-        """, profile: "spirv_1_0");
+        """, profile: "spirv_1_3");
 
     /// <summary>
-    /// Generates INT16 DP2A packed dot product compute shader.
+    /// Generates hardware INT16 DP2A dot product compute shader targeting native v_dot2_i32_i16 on RDNA 2 and Intel Arc.
+    /// Operates on 16-bit vector pairs via OpSDotKHR and protected against constant folding.
     /// </summary>
     public static uint[] GetShaderDP2A(VulkanCapabilityProbe? probe = null) => _spvDp2a ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<int> buffer;
-        int dp2a_s16(int a, int b, int acc)
+
+        [ForceInline]
+        int dp2a_hardware(int16_t2 a, int16_t2 b, int acc)
         {
-            int a_lo = (a << 16) >> 16; int a_hi = a >> 16;
-            int b_lo = (b << 16) >> 16; int b_hi = b >> 16;
-            return acc + (a_lo * b_lo + a_hi * b_hi);
+            int dotResult = spirv_asm {
+                OpCapability DotProductKHR;
+                OpCapability DotProductInputAllKHR;
+                OpExtension "SPV_KHR_integer_dot_product";
+                result:$$int = OpSDotKHR $a $b;
+            };
+            return dotResult + acc;
         }
+
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
             int s = buffer[id.x];
             int4 acc0 = int4(s, s + 1, s + 2, s + 3);
-            int a = 0x00030003;
-            int b = 0x00070007;
+
+            int16_t2 a = int16_t2(int16_t(s ^ 0x0003), int16_t((s + 1) ^ 0x0005));
+            int16_t2 b = int16_t2(int16_t(s ^ 0x0007), int16_t((s + 2) ^ 0x0009));
 
             [loop]
             for (int i = 128; i > 0; i--)
             {
-                acc0.x = dp2a_s16(a, b, acc0.y);
-                acc0.y = dp2a_s16(a, b, acc0.z);
-                acc0.z = dp2a_s16(a, b, acc0.w);
-                acc0.w = dp2a_s16(a, b, acc0.x);
+                acc0.x = dp2a_hardware(a, b, acc0.y);
+                acc0.y = dp2a_hardware(a, b, acc0.z);
+                acc0.z = dp2a_hardware(a, b, acc0.w);
+                acc0.w = dp2a_hardware(a, b, acc0.x);
             }
+
             buffer[id.x] = acc0.x + acc0.y + acc0.z + acc0.w;
         }
-        """, profile: "spirv_1_0");
+        """, profile: "spirv_1_3");
 
     // =========================================================================
     // Standard KHR Cooperative Matrix Shaders (VK_KHR_cooperative_matrix)
@@ -608,15 +634,7 @@ public static class VulkanShaders
         """, profile: "spirv_1_3");
     }
 
-    public static uint[] GetShaderMatINT4(VulkanCapabilityProbe? probe = null)
-    {
-        if (_spvMatInt4 != null) return _spvMatInt4;
-
-        return _spvMatInt4 = SlangCompiler.CompileToSpirv("""
-        #pragma spirv extension "SPV_INTEL_int4"
-        #pragma spirv capability Int4TypeINTEL
-        #pragma spirv capability Int4CooperativeMatrixINTEL
-
+    public static uint[] GetShaderMatINT4(VulkanCapabilityProbe? probe = null) => _spvMatInt4 ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<uint> bufferA;
         [[vk::binding(1, 0)]] RWStructuredBuffer<uint> bufferB;
         [[vk::binding(2, 0)]] RWStructuredBuffer<int> bufferC;
@@ -628,7 +646,12 @@ public static class VulkanShaders
         [ForceInline]
         MatC coopMma(MatA a, MatB b, MatC c)
         {
-            return spirv_asm { result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c; };
+            return spirv_asm {
+                OpCapability Int4TypeINTEL;
+                OpCapability Int4CooperativeMatrixINTEL;
+                OpExtension "SPV_INTEL_int4";
+                result:$$MatC = OpCooperativeMatrixMulAddKHR $a $b $c;
+            };
         }
 
         [numthreads(64, 1, 1)]
@@ -643,12 +666,14 @@ public static class VulkanShaders
             acc.fill(0);
 
             [loop]
-            for (int i = 0; i < 16; i++) acc = coopMma(matA, matB, acc);
+            for (int i = 0; i < 16; i++)
+            {
+                acc = coopMma(matA, matB, acc);
+            }
 
             acc.Store<linalg::CoopMatMatrixLayout.RowMajor>(bufferC, outOffset, 8);
         }
-        """, profile: "spirv_1_3", extraArgs: "-capability Int4CooperativeMatrixINTEL");
-    }
+        """, profile: "spirv_1_3");
 
     public static uint[] GetShaderMatINT16(VulkanCapabilityProbe? probe = null)
     {

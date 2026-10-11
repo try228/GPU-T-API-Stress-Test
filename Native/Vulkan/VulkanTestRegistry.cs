@@ -58,7 +58,7 @@ public sealed class VulkanTestRegistry
         Items.Add(new("alu_int16", "INT16 Short Math",  "ALU (INT)", probe.HasInt16, "GIOPS"));
         Items.Add(new("alu_int8",  "INT8 Byte Math",    "ALU (INT)", probe.HasInt8, "GIOPS"));
         Items.Add(new("alu_dp4a",  "INT8 DP4A DotProd", "ALU (INT)", probe.HasIntegerDotProduct, "TOPS"));
-        Items.Add(new("alu_dp2a",  "INT16 DP2A DotProd","ALU (INT)", probe.HasIntegerDotProduct && probe.HasInt16, "TOPS"));
+        Items.Add(new("alu_dp2a", "DP2A (INT16)", "ALU (INT)", probe.HasDotProduct16Bit, "TIOPS"));
 
         // 3. VRAM & CACHES
         Items.Add(new("mem_bw",   "VRAM Stream BW",    "VRAM & CACHES", true, "GB/s"));
