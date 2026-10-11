@@ -130,7 +130,7 @@ The Vulkan backend (`vk`) runs a software-rasterized telemetry HUD and multiple 
   * **Intel XMX INT4:** Hardware-accelerated 4-bit integer matrix math via `SPV_INTEL_int4` on Intel Arc / Battlemage silicon.
   * Supported types: FP16, BF16, FP8 (E4M3 / E5M2), FP32, FP64, INT8, INT16, INT32, INT64, INT4.
 * **Memory & Cache Hierarchy:**
-  * **Adaptive VRAM Bus Streaming:** Dynamically sizes memory sweep buffers ($\text{Clamp}(\text{TotalVRAM} / 4,\; 256\text{ MB},\; 1024\text{ MB})$) based on probed on-die cache capacity. Guarantees complete exhaustion of AMD Infinity Cache (up to 128 MB) and NVIDIA L2 (up to 96 MB), measuring true physical GDDR/HBM bus saturation rather than on-chip SRAM cache hits.
+  * **Adaptive VRAM Bus Streaming:** Dynamically sizes memory sweep buffers between 256 MB and 1024 MB (`TotalVRAM / 4`) based on probed on-die cache capacity. Guarantees complete exhaustion of AMD Infinity Cache (up to 128 MB) and NVIDIA L2 (up to 96 MB), measuring true physical GDDR/HBM bus saturation rather than on-chip SRAM cache hits.
   * **L1/L2 Cache:** Operates on a safe 1 MB footprint, ensuring working sets fit strictly inside L2 across all architectures (including 2 MB L2 on Pascal GTX 1080) without spilling to VRAM.
   * **L3 Infinity Cache:** Probed via silicon topology rules (8–128 MB). Automatically disabled (`N/A`) on GPUs lacking hardware L3.
   * **Integrated GPUs (UMA):** Automatically disables dedicated L1/L2 and L3 cache benchmarks (`N/A`) if the probe database reports zero dedicated GPU cache, falling back to measuring shared system RAM throughput and interconnect latency.
