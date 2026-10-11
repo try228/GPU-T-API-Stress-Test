@@ -16,7 +16,7 @@ using VkBuffer = Silk.NET.Vulkan.Buffer;
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Native feature struct for VK_NV_cooperative_matrix.
+/// Native feature structure for VK_NV_cooperative_matrix.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct VkPhysicalDeviceCooperativeMatrixFeaturesNV
@@ -27,7 +27,7 @@ public unsafe struct VkPhysicalDeviceCooperativeMatrixFeaturesNV
 }
 
 /// <summary>
-/// Native feature struct for VK_NV_cooperative_matrix2.
+/// Native feature structure for VK_NV_cooperative_matrix2.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct VkPhysicalDeviceCooperativeMatrix2FeaturesNV
@@ -41,7 +41,7 @@ public unsafe struct VkPhysicalDeviceCooperativeMatrix2FeaturesNV
 
 /// <summary>
 /// Execution orchestrator for Vulkan compute stress testing and real-time telemetry.
-/// Fully adaptive to physical GPU silicon topology, memory hierarchy, and Vulkan 1.0 specifications.
+/// Automatically filters physical silicon, excludes virtual/software emulators, and adapts buffer dimensions.
 /// </summary>
 public sealed unsafe class VulkanStressBenchmark : IDisposable
 {
@@ -163,6 +163,34 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     }
 
     /// <summary>
+    /// Evaluates suitability score for a physical device, rejecting software emulators and virtualized adapters.
+    /// </summary>
+    private static int EvaluateDeviceScore(PhysicalDeviceProperties props, string devName)
+    {
+        // Reject software emulators and virtual paravirtualized adapters
+        if (props.DeviceType is PhysicalDeviceType.Cpu or PhysicalDeviceType.VirtualGpu or PhysicalDeviceType.Other)
+        {
+            return -100;
+        }
+
+        if (devName.Contains("llvmpipe", StringComparison.OrdinalIgnoreCase) ||
+            devName.Contains("lavapipe", StringComparison.OrdinalIgnoreCase) ||
+            devName.Contains("swiftshader", StringComparison.OrdinalIgnoreCase) ||
+            devName.Contains("virgl", StringComparison.OrdinalIgnoreCase) ||
+            devName.Contains("venus", StringComparison.OrdinalIgnoreCase))
+        {
+            return -100;
+        }
+
+        return props.DeviceType switch
+        {
+            PhysicalDeviceType.DiscreteGpu => 1000,
+            PhysicalDeviceType.IntegratedGpu => 500,
+            _ => -50
+        };
+    }
+
+    /// <summary>
     /// Dynamically resolves the active pipeline based on runtime UI switches and silicon support.
     /// </summary>
     private Pipeline ResolvePipeline(string testId)
@@ -249,7 +277,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         for (int i = 0; i < instExtensions.Count; i++)
             ppInstExts[i] = (byte*)SilkMarshal.StringToPtr(instExtensions[i]);
 
-        // Targeted strictly at core Vulkan 1.0 (release 2016)
+        // Core Vulkan 1.0 profile specification
         ApplicationInfo appInfo = new()
         {
             SType = StructureType.ApplicationInfo,
@@ -286,66 +314,49 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         Unsafe.InitBlock(pDevs, 0, (uint)(sizeof(PhysicalDevice) * devCount));
         _vk.EnumeratePhysicalDevices(_instance, &devCount, pDevs);
 
-        int gpuIdx = Math.Clamp(selectedGpuIndex, 0, (int)devCount - 1);
-        // 1. Gathering a full list of available physical GPUs
-PhysicalDevice selectedDevice = default;
-PhysicalDevice fallbackHardwareDevice = default;
-string chosenDeviceName = "";
+        // Hardware device scoring and software emulation elimination
+        PhysicalDevice bestDevice = default;
+        int bestScore = int.MinValue;
+        string bestDeviceName = "";
 
-for (uint i = 0; i < devCount; i++)
-{
-    PhysicalDeviceProperties props;
-    _vk.GetPhysicalDeviceProperties(pDevs[i], &props);
-    string devName = SilkMarshal.PtrToString((nint)props.DeviceName);
-
-    // Software emulation detection (Lavapipe, LLVMpipe, SwiftShader)
-    bool isSoftware = props.DeviceType == PhysicalDeviceType.Cpu
-        || devName.Contains("llvmpipe", StringComparison.OrdinalIgnoreCase)
-        || devName.Contains("lavapipe", StringComparison.OrdinalIgnoreCase)
-        || devName.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
-
-    if (!isSoftware && fallbackHardwareDevice.Handle == 0)
-    {
-        // Remembering the first found real GPU (discrete or integrated)
-        fallbackHardwareDevice = pDevs[i];
-    }
-
-    if (i == (uint)selectedGpuIndex)
-    {
-        if (isSoftware)
+        for (uint i = 0; i < devCount; i++)
         {
-            Console.WriteLine($"[GPU-T Warning] Selected device '{devName}' is a software emulation layer.");
+            PhysicalDeviceProperties props;
+            _vk.GetPhysicalDeviceProperties(pDevs[i], &props);
+            string devName = SilkMarshal.PtrToString((nint)props.DeviceName);
+            int score = EvaluateDeviceScore(props, devName);
+
+            if (i == (uint)selectedGpuIndex)
+            {
+                if (score > 0)
+                {
+                    bestDevice = pDevs[i];
+                    bestScore = score;
+                    bestDeviceName = devName;
+                    break;
+                }
+                else
+                {
+                    Console.WriteLine($"[GPU-T Warning] Selected GPU index {i} ('{devName}') is not supported (Score: {score}). Searching for physical hardware...");
+                }
+            }
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestDevice = pDevs[i];
+                bestDeviceName = devName;
+            }
         }
-        else
+
+        if (bestScore <= 0 || bestDevice.Handle == 0)
         {
-            selectedDevice = pDevs[i];
-            chosenDeviceName = devName;
+            throw new NotSupportedException(
+                "Software GPU emulation (Lavapipe/LLVMpipe/SwiftShader), Virtual GPUs (VirtIO/Venus), and Other non-standard devices are not supported! " +
+                "GPU-T requires physical hardware silicon (Discrete or Integrated GPU).");
         }
-    }
-}
 
-// 2. If selected index is a software emulator:
-if (selectedDevice.Handle == 0)
-{
-    if (fallbackHardwareDevice.Handle != 0)
-    {
-        // Automatically switch to a physical GPU if available
-        selectedDevice = fallbackHardwareDevice;
-        PhysicalDeviceProperties fbProps;
-        _vk.GetPhysicalDeviceProperties(selectedDevice, &fbProps);
-        string fbName = SilkMarshal.PtrToString((nint)fbProps.DeviceName);
-        Console.WriteLine($"[GPU-T Info] Automatically switched to physical GPU: '{fbName}'.");
-    }
-    else
-    {
-        // If system has no physical GPU - give an readable error
-        throw new NotSupportedException(
-            "Software GPU emulation (Lavapipe / LLVMpipe / SwiftShader) is not supported! " +
-            "GPU-T is a physical silicon stress test and requires a hardware GPU (AMD, NVIDIA, or Intel).");
-    }
-}
-
-_physicalDevice = selectedDevice;
+        _physicalDevice = bestDevice;
 
         _capabilityProbe = new VulkanCapabilityProbe(_vk, _physicalDevice, _instance, mockTarget);
         _testRegistry = new VulkanTestRegistry(_capabilityProbe);
@@ -372,8 +383,9 @@ _physicalDevice = selectedDevice;
 
         // VRAM sweep buffer must exceed the largest cache by at least 4x-8x to force true GDDR/HBM bus saturation
         ulong targetSweep = Math.Max(256UL * 1024 * 1024, maxCacheBytes * 4UL);
-        ulong maxAllowedSweep = Math.Clamp(_totalVramBytes / 4UL, 64UL * 1024 * 1024, 1024UL * 1024 * 1024);
-_vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
+        ulong maxAllowedSweep = Math.Clamp(_totalVramBytes / 8UL, 256UL * 1024 * 1024, 1024UL * 1024 * 1024);
+        _vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
+        _vramSweepSizeBytes = (_vramSweepSizeBytes + 0x00FFFFFFUL) & ~0x00FFFFFFUL; // 16 MB boundary alignment
 
         uint cuEstimate = Math.Clamp(_capabilityProbe.L2CacheSizeBytes / (64u * 1024u), 20u, 160u);
         _wgAluAndL1 = cuEstimate * 64u;
@@ -506,8 +518,11 @@ _vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
 
         nuint halfRange = allocBufferSize / 2;
         DescriptorBufferInfo* descBufInfos = stackalloc DescriptorBufferInfo[3];
+        // Binding 0 covers entire buffer to safely support both full sweeps and initialization
         descBufInfos[0] = new() { Buffer = _ssboBuffer, Offset = 0, Range = allocBufferSize };
+        // Binding 1 starts at halfRange for streaming writes and Matrix B operands
         descBufInfos[1] = new() { Buffer = _ssboBuffer, Offset = halfRange, Range = halfRange };
+        // Binding 2 covers entire buffer for Matrix C accumulator operands
         descBufInfos[2] = new() { Buffer = _ssboBuffer, Offset = 0, Range = allocBufferSize };
 
         WriteDescriptorSet* writeDs = stackalloc WriteDescriptorSet[3];
@@ -912,6 +927,7 @@ _vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
             if (item.IsChecked && item.IsSupported && HasPipelineFor(item.Id))
             {
                 if (item.Id == "mem_l3" && !_capabilityProbe.HasL3InfinityCache) continue;
+                if (item.Id == "mem_l1l2" && _capabilityProbe.L2CacheSizeBytes == 0) continue;
                 activeList.Add(item.Id);
             }
         }
@@ -921,16 +937,6 @@ _vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
 
         CommandBufferBeginInfo cbBegin = new() { SType = StructureType.CommandBufferBeginInfo, PNext = null, Flags = CommandBufferUsageFlags.SimultaneousUseBit };
         var ds = _descSet;
-
-        foreach (var item in _testRegistry.Items)
-{
-    if (item.IsChecked && item.IsSupported && HasPipelineFor(item.Id))
-    {
-        if (item.Id == "mem_l3" && !_capabilityProbe.HasL3InfinityCache) continue;
-        if (item.Id == "mem_l1l2" && _capabilityProbe.L2CacheSizeBytes == 0) continue; // <-- Защита от встроек
-        activeList.Add(item.Id);
-    }
-}
 
         foreach (var testId in _activeTestSnapshot)
         {
@@ -1233,7 +1239,7 @@ _vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
 
             // Accurate L1/L2 calculation: 64 threads * 544 bytes = 34,816 bytes per workgroup
             const double l2BytesPerGroup = 64.0 * 544.0;
-            double cacheL1L2Tbs = (_testRegistry.IsActive("mem_l1l2") && HasPipelineFor("mem_l1l2"))
+            double cacheL1L2Tbs = (_testRegistry.IsActive("mem_l1l2") && _capabilityProbe.L2CacheSizeBytes > 0 && HasPipelineFor("mem_l1l2"))
                 ? (GetDps("mem_l1l2") * (_wgAluAndL1 * l2BytesPerGroup)) / 1_000_000_000_000.0
                 : 0.0;
 
