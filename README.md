@@ -1,12 +1,33 @@
 # GPU-T Stress Test & Benchmark Sidecar
 
-Standalone **Native AOT GPU API benchmark and compute/graphics stress-test sidecar** for **GPU-T**.
+Standalone Native AOT GPU benchmark and compute/graphics stress test for **GPU-T**.
+
+---
+
+## Prerequisites
+
+### 1. Build Tools & Runtime
+* **.NET 10.0 SDK** (or later)
+* **Native AOT toolchain**:
+  * **Ubuntu / Debian**: `sudo apt install -y build-essential clang zlib1g-dev libgl1-mesa-dev libvulkan-dev`
+  * **Arch Linux**: `sudo pacman -S base-devel clang zlib mesa vulkan-icd-loader`
+  * **Fedora**: `sudo dnf install -y clang gcc zlib-devel mesa-libGL-devel vulkan-loader-devel`
+* **Slang Compiler (`slangc`)**:
+  * Must be installed and available in `$PATH`.
+  * Used by the runtime to compile compute and cooperative matrix shaders into SPIR-V.
+
+### 2. Runtime Drivers & Optional Tools
+* **Vulkan 1.1+** capable driver and loader (`vulkan-tools`, Mesa / NVIDIA / Intel compute drivers).
+* **Wine / Proton** (required only for Windows Direct3D backends via DXVK / VKD3D).
+* **Vulkan Validation Layers** (`vulkan-validation-layers`), optional, for `--debug`.
+
+---
 
 ## Build
 
-### 1. Publish the Windows Direct3D payload
+### 1. Windows Direct3D payload (Optional)
 
-Publishes a compressed and trimmed `win-x64` Direct3D payload:
+Publishes a trimmed `win-x64` payload used for Wine/Proton translation benchmarks:
 
 ```bash
 dotnet publish Payloads/D3DPayload \
@@ -15,24 +36,16 @@ dotnet publish Payloads/D3DPayload \
   -o bin/Release/net10.0/linux-x64/publish/payloads
 ```
 
-### 2. Optional: Build the experimental native C Direct3D payload
+Run with `--native-d3d` at runtime to use this payload.
 
-Requires `mingw-w64-gcc`:
-
-```bash
-x86_64-w64-mingw32-gcc -O3 -s -mwindows \
-  Payloads/D3DPayload/NativeD3D/d3dstress.c \
-  -o bin/Release/net10.0/linux-x64/publish/payloads/d3d_stress_native.exe \
-  -ld3d9 -ld3d11 -ld3d12 -ldxgi -ldxguid -lm
-```
-
-The native payload can be selected at runtime with `--native-d3d`.
-
-### 3. Publish the Linux Native AOT sidecar
+### 2. Linux Native AOT binary
 
 ```bash
 dotnet publish -c Release -r linux-x64
 ```
+
+The resulting binary will be located at:
+`./bin/Release/net10.0/linux-x64/publish/GPU-T.StressTest`
 
 ---
 
@@ -44,143 +57,111 @@ dotnet publish -c Release -r linux-x64
 
 ### Options
 
-| Option                          | Description                                                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `-b, --backend <api>`           | Target backend API. Default: `gl`.                                                                                        |
-| `-g, --gpu <index\|name>`       | Target GPU by numeric index, such as `0` or `1`, or by a name/vendor substring, such as `amd`, `intel`, or `nvidia`.      |
-| `-d, --duration <sec>`          | Initial stress-test duration in seconds. Use `0` for unlimited duration.                                                  |
-| `-m, --mock-gpu <target>`       | Simulate a virtual GPU architecture profile: `nvidia` (RTX 5090), `intel` (Arc B580), `rdna3` (RX 7900 GRE), `pascal`.    |
-| `-n, --native-d3d`              | Use the experimental lightweight native C Direct3D payload (`d3d_stress_native.exe`) instead of the managed .NET payload. |
-| `--debug`, `-dbg`, `--vk-debug` | Enable Vulkan debug messenger (`VK_EXT_debug_utils`) colored callback logging in console.                                 |
-| `--list-gpus`                   | Enumerate all detected GPU devices, including PCI IDs, and exit.                                                          |
-| `-h, --help`                    | Display CLI usage information.                                                                                            |
+| Option                          | Description                                                                                          |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `-b, --backend <api>`           | Target backend API. Default: `gl`.                                                                   |
+| `-g, --gpu <index\|name>`       | Target GPU by numeric index (`0`, `1`) or vendor/device substring (`amd`, `intel`, `nvidia`).        |
+| `-d, --duration <sec>`          | Test duration in seconds (`0` for unlimited). Default: `0`.                                          |
+| `-m, --mock-gpu <target>`       | Override hardware detection profile: `nvidia` (RTX 5090), `intel` (Arc B580), `rdna3` (RX 7900 GRE), `pascal`. |
+| `--debug`, `-dbg`, `--vk-debug` | Enable Vulkan debug messenger (`VK_EXT_debug_utils`) with colorized console output.                  |
+| `--list-gpus`                   | List detected GPUs and PCI IDs, then exit.                                                           |
+| `-h, --help`                    | Show help and exit.                                                                                  |
 
-> **Note:** The backend can also be specified through the `API_backend` environment variable:
+> **Tip:** You can also select the backend using the `API_backend` environment variable:
 >
 > ```bash
 > API_backend=vk ./GPU-T.StressTest
 > ```
 >
-> Command-line arguments take precedence over environment variables.
+> CLI flags override environment variables.
 
 ---
 
-## Native Linux Backends
+## Supported Backends
 
-| Identifier           | Target Graphics / Compute API                         |
+### Native Linux
+
+| Identifier           | Target API                                            |
 | -------------------- | ----------------------------------------------------- |
-| `gl`, `opengl`       | Desktop OpenGL 3.3 Core — **Default**                 |
+| `gl`, `opengl`       | Desktop OpenGL 3.3 Core (**Default**)                 |
 | `gles`, `opengles`   | OpenGL ES 3.0                                         |
-| `vk`, `vulkan`       | Vulkan 1.0 Baseline Compute & Silicon Stress Matrix   |
-| `zink`               | Zink — OpenGL over Vulkan                             |
-| `zink_es`            | Zink — OpenGL ES over Vulkan                          |
-| `cl`, `opencl`       | OpenCL 1.2+ compute                                   |
-| `mesa_cl`, `rusticl` | Mesa Rusticl — Rust-based OpenCL                      |
-| `cuda`               | NVIDIA CUDA Driver API — native or ZLUDA on AMD/Intel |
+| `vk`, `vulkan`       | Vulkan 1.0 Compute & Matrix Stress Pipeline       |
+| `zink`               | OpenGL over Vulkan (Mesa Zink)                        |
+| `zink_es`            | OpenGL ES over Vulkan (Mesa Zink)                     |
+| `cl`, `opencl`       | OpenCL 1.2+ Compute                                   |
+| `mesa_cl`, `rusticl` | Mesa Rusticl (Rust-based OpenCL)                      |
+| `cuda`               | NVIDIA CUDA Driver API (native or via ZLUDA on AMD/Intel) |
 | `rocm`, `hip`        | AMD ROCm / HIP Runtime                                |
 | `oapi`, `oneapi`     | Intel oneAPI Level Zero                               |
 
----
+### Direct3D via Wine / Proton
 
-## Windows Direct3D Backends via Wine / Proton
-
-| Identifier                   | Direct3D Version & Translation Layer            |
-| ---------------------------- | ----------------------------------------------- |
-| `dxvk_9`, `dx9`              | Direct3D 9 over Vulkan via DXVK                 |
-| `wd3d_9`                     | Direct3D 9 over OpenGL via WineD3D              |
-| `dxvk_11`, `dx11`, `dxvk`    | Direct3D 11 over Vulkan via DXVK                |
-| `wd3d_11`, `wd3d`, `wined3d` | Direct3D 11 over OpenGL via WineD3D             |
-| `vkd3d`                      | Direct3D 12 over Vulkan via Wine upstream VKD3D |
-| `vkd3d_p`, `dx12`            | Direct3D 12 over Vulkan via Valve VKD3D-Proton  |
+| Identifier                   | Translation Layer                                     |
+| ---------------------------- | ----------------------------------------------------- |
+| `dxvk_9`, `dx9`              | Direct3D 9 over Vulkan (DXVK)                         |
+| `wd3d_9`                     | Direct3D 9 over OpenGL (WineD3D)                      |
+| `dxvk_11`, `dx11`, `dxvk`    | Direct3D 11 over Vulkan (DXVK)                        |
+| `wd3d_11`, `wd3d`, `wined3d` | Direct3D 11 over OpenGL (WineD3D)                     |
+| `vkd3d`                      | Direct3D 12 over Vulkan (upstream Wine VKD3D)         |
+| `vkd3d_p`, `dx12`            | Direct3D 12 over Vulkan (Valve VKD3D-Proton)          |
 
 ---
 
-## Notes & Architecture
+## Technical Notes
 
-### Vulkan Stress Matrix & Silicon Telemetry
+### Vulkan Stress Architecture
 
-The Vulkan backend (`vk`) features a comprehensive software rendering HUD and a customizable workload configuration matrix:
+The Vulkan backend (`vk`) runs a software-rasterized telemetry HUD and multiple compute stress kernels:
 
-* **Isolated Round-Robin Dispatch**: Multiple active workloads are executed using per-submit time multiplexing. This ensures heavy compute shaders (e.g. FP32) do not dilute memory latency or cache bandwidth measurements, presenting pure unpolluted hardware metrics simultaneously.
-* **Hardware-Accurate ALU Engines:**
+* **Multiplexed Dispatch**: Active workloads run via round-robin submission bursts. Compute kernels do not overlap directly with memory tests, preventing ALU load from skewing cache or bus throughput numbers.
+* **ALU Workloads:**
+  * **FP32:** Vectorized FMA kernel (4096 FLOPs/thread).
+  * **FP16 / BF16:** Packed 16-bit math (8192 / 4096 FLOPs/thread).
+  * **FP64:** Double-precision FMA (1024 FLOPs/thread).
+  * **INT32 / INT16 / INT8 / INT64:** Native integer arithmetic pipelines.
+  * **DP4A / DP2A:** Packed dot-product instructions (`dot4add_i8packed`, DP2A emulation/intrinsics).
+* **Matrix / Tensor Pipelines:**
+  * Standard `VK_KHR_cooperative_matrix` path for generic hardware.
+  * Dedicated `VK_NV_cooperative_matrix` (NV1) legacy path for older NVIDIA drivers.
+  * `VK_NV_cooperative_matrix2` (NV2) workgroup-scoped tensor math path.
+  * Supported types: FP16, BF16, FP8 (E4M3 / E5M2), FP32, FP64, INT8, INT16, INT32, INT64, INT4.
+* **Memory & Cache Hierarchy:**
+  * **L1/L2 Cache:** Grid dimensions dynamically scale to saturate ~75% of probed L2 capacity to measure cache bandwidth without spilling to VRAM.
+  * **L3 Infinity Cache:** Probed on discrete AMD RDNA 2/3/4 and RDNA 3.5 APUs (8–128 MB). Skipped on GPUs without hardware L3.
+  * **VRAM Streaming:** Linear 128 MB read / 128 MB write memory bus test.
+  * **Latency:** Serial pointer-chasing kernel to test interconnect latency.
 
-  * **FP32 Core FMA:** Standardized 4096 FLOPs/invocation compute kernel.
-  * **FP16/BF16 Packed Math:** 4096 FLOPs/invocation half-precision math.
-  * **FP64 Double Prec:** 2048 FLOPs/invocation 64-bit precision math.
-  * **INT32 / INT64 / INT16 / INT8:** Discrete integer ALU pipelines.
-  * **INT8 DP4A & INT16 DP2A:** Hardware dot product instructions (`OpSDotKHR`), executing natively on NVIDIA Turing/Ampere/Ada (`IDP2A`) and AMD RDNA (`V_DOT4` / `V_PK_MAD_I16` packed math).
-* **Adaptive Cache & Memory Probing:**
+### Vulkan Validation
 
-  * **L1/L2 Cache Bandwidth:** Dynamically scales workgroup grids to fit 75% of the probed hardware L2 cache, measuring bidirectional cache throughput (TB/s) without flushing to VRAM.
-  * **L3 Infinity Cache:** Specifically probed for AMD discrete RDNA 2/3/4 (8 MB to 128 MB) and RDNA 3.5 Halo APUs (8040S, 8050S, 8060S, 8065S). Strictly disabled for GPUs without L3.
-  * **VRAM Stream Bandwidth:** Measures physical bus dataset throughput (GB/s) over a 128 MB allocation.
-  * **Memory Latency:** 1024-step serial pointer-chasing kernel measuring physical fabric transit latency (ns).
-
-### Vulkan Debugging & Validation
-
-Validation layers are decoupled from application binaries. To enable validation layer diagnostic interception, use standard Vulkan Loader environment variables combined with the `--debug` CLI flag:
+Validation layers are not linked into the binary. To debug pipeline issues, run with the loader layer enabled:
 
 ```bash
-# Run with Khronos validation layer and colorized console logging:
 VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ./GPU-T.StressTest -b vk --debug
 ```
 
-When `--debug` (or `-dbg` / `--vk-debug`) is passed, the engine registers `VK_EXT_debug_utils` and prints color-coded warnings and error notifications directly to `stdout`.
+### Mock Profiles
 
-### Mock GPU Profiles
-
-To simulate hardware feature combinations (such as AMD Infinity Cache or NVIDIA Blackwell 128 MB L2) without physical hardware access, use `--mock-gpu`:
+Use `--mock-gpu` to test device probing and UI layout without specific physical hardware:
 
 ```bash
-./GPU-T.StressTest -b vk -m nvidia   # Simulates RTX 5090 Blackwell profile
-./GPU-T.StressTest -b vk -m rdna3    # Simulates RX 7900 GRE RDNA 3 profile
-./GPU-T.StressTest -b vk -m intel    # Simulates Arc B580 Battlemage profile
+./GPU-T.StressTest -b vk -m nvidia   # RTX 5090 profile (128 MB L2)
+./GPU-T.StressTest -b vk -m rdna3    # RX 7900 GRE profile (Infinity Cache)
+./GPU-T.StressTest -b vk -m intel    # Arc B580 profile (Intel XMX / Int4)
 ```
 
-### Device Selection
+### Multi-GPU GPU Selection Limitations
 
-Compute APIs such as **Vulkan, OpenCL, CUDA, ROCm, and oneAPI**, as well as Vulkan-based Direct3D translation layers such as **DXVK** and **VKD3D/VKD3D-Proton**, can directly target the GPU selected with:
+* **Vulkan, OpenCL, CUDA, ROCm, Level Zero, DXVK, and VKD3D** can bind directly to any GPU via `-g <index|name>`.
+* **Native OpenGL (`gl`, `gles`) and WineD3D (`wd3d_*`)** cannot reliably switch GPUs via `-g` because context creation depends on the default display server screen.
+* To target a secondary GPU with OpenGL, use Zink:
 
-```bash
--g <index|name>
-```
+  ```bash
+  ./GPU-T.StressTest -b zink -g 1
+  ```
 
-### OpenGL and WineD3D Multi-GPU Behavior
+*(There is no WineD3D-over-Zink path, as chaining WineD3D → OpenGL → Zink → Vulkan adds unnecessary overhead.)*
 
-Native OpenGL backends (`gl`, `gles`) render through the display server's default screen context and therefore cannot reliably select a secondary GPU using `-g`.
+### ZLUDA & Rusticl
 
-**WineD3D has the same limitation**, since its rendering path also goes through OpenGL. As a result, the `wd3d_9` and `wd3d_11` backends use the GPU selected by the underlying OpenGL/display context rather than directly honoring GPU selection in the same way as Vulkan-based backends.
-
-For native OpenGL, a secondary GPU can instead be targeted through Zink:
-
-```bash
-./GPU-T.StressTest -b zink -g <index>
-```
-
-There is intentionally **no equivalent WineD3D-over-Zink path**. Stacking multiple translation layers, for example:
-
-```text
-WineD3D → OpenGL → Zink → Vulkan
-```
-
-would add unnecessary complexity and overhead and is not considered a practical use case.
-
-### Direct3D Payload Selection
-
-By default, Windows Direct3D backends use the managed .NET Direct3D payload.
-
-To use the experimental lightweight native C implementation instead, build `d3d_stress_native.exe` and run:
-
-```bash
-./GPU-T.StressTest -b dxvk_11 --native-d3d
-```
-
-The `--native-d3d` option applies to the Windows Direct3D payload path and does not affect native Linux graphics or compute backends.
-
-### ZLUDA Support
-
-The CUDA backend dynamically detects whether it is running with native NVIDIA drivers or through **ZLUDA** translation on supported AMD or Intel hardware.
-
-### Rusticl Initialization
-
-The Mesa Rusticl backend may experience a brief initialization delay while kernels are JIT-compiled through Clang/LLVM.
+* **CUDA Backend:** Automatically detects if running on native NVIDIA hardware or through ZLUDA on AMD/Intel GPUs.
+* **Rusticl:** Expect a brief delay on startup while OpenCL kernels are JIT-compiled by Clang/LLVM.
