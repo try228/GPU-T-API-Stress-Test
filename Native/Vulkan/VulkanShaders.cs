@@ -1,8 +1,8 @@
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Hardware-accurate compute shader generator targeting SPIR-V 1.0 (ALU and Memory hierarchy)
-/// and SPIR-V 1.3 (Standard VK_KHR_cooperative_matrix).
+/// Hardware compute shader generator targeting SPIR-V 1.0 (ALU, cache, and VRAM memory streaming)
+/// and SPIR-V 1.3 (standard Khronos cooperative matrix operations).
 /// </summary>
 public static class VulkanShaders
 {
@@ -66,7 +66,7 @@ public static class VulkanShaders
         """, profile: "spirv_1_0");
 
     /// <summary>
-    /// Generates FP32 compute shader optimized for dual-issue scalar pipelines.
+    /// Generates FP32 compute shader optimized for dual-issue scalar execution.
     /// </summary>
     public static uint[] GetShaderFP32() => _spvFp32 ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<float> buffer;
@@ -178,7 +178,7 @@ public static class VulkanShaders
         """, profile: "spirv_1_0");
 
     /// <summary>
-    /// Generates 32-bit integer compute shader utilizing single-cycle ALU instructions.
+    /// Generates 32-bit integer compute shader.
     /// </summary>
     public static uint[] GetShaderINT32() => _spvInt32 ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<uint> buffer;
@@ -771,23 +771,31 @@ public static class VulkanShaders
     // Cache & Physical VRAM Bus Streaming
     // =========================================================================
 
+    /// <summary>
+    /// Generates L1/L2 cache saturation compute shader.
+    /// Operates on a safe 1 MB footprint (0x0000FFFF mask) that strictly resides within L2 across all architectures (including 2 MB L2 on GTX 1080).
+    /// </summary>
     public static uint[] GetShaderL2Cache() => _spvMemL2 ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<uint4> buffer;
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            uint idx = id.x & 0x0002FFFFu;
+            uint idx = id.x & 0x0000FFFFu;
             uint4 v = buffer[idx];
 
             [loop]
             for (int i = 0; i < 32; i++)
             {
-                v += buffer[(idx + i) & 0x0002FFFFu];
+                v += buffer[(idx + i) & 0x0000FFFFu];
             }
             buffer[idx] = v;
         }
         """, profile: "spirv_1_0");
 
+    /// <summary>
+    /// Generates L3 / AMD Infinity Cache compute shader.
+    /// Operates on a 32 MB footprint (0x001FFFFF mask) residing inside Infinity Cache while exhausting L2.
+    /// </summary>
     public static uint[] GetShaderL3Cache() => _spvMemL3 ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<uint4> buffer;
         [numthreads(64, 1, 1)]
@@ -805,6 +813,10 @@ public static class VulkanShaders
         }
         """, profile: "spirv_1_0");
 
+    /// <summary>
+    /// Coalesced streaming compute shader saturating physical GDDR/HBM bus bandwidth.
+    /// Each thread streams 8 consecutive 128-bit vectors (128 bytes read, 128 bytes written).
+    /// </summary>
     public static uint[] GetShaderMem() => _spvMemVram ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<uint4> bufferIn;
         [[vk::binding(1, 0)]] RWStructuredBuffer<uint4> bufferOut;
@@ -812,21 +824,31 @@ public static class VulkanShaders
         [numthreads(64, 1, 1)]
         void main(uint3 id : SV_DispatchThreadID)
         {
-            const uint stride = 2097152u;
-            uint idx = id.x;
+            uint baseIdx = id.x * 8u;
 
-            uint4 v0 = bufferIn[idx];
-            uint4 v1 = bufferIn[idx + stride];
-            uint4 v2 = bufferIn[idx + stride * 2u];
-            uint4 v3 = bufferIn[idx + stride * 3u];
+            uint4 a0 = bufferIn[baseIdx + 0u];
+            uint4 a1 = bufferIn[baseIdx + 1u];
+            uint4 a2 = bufferIn[baseIdx + 2u];
+            uint4 a3 = bufferIn[baseIdx + 3u];
+            uint4 a4 = bufferIn[baseIdx + 4u];
+            uint4 a5 = bufferIn[baseIdx + 5u];
+            uint4 a6 = bufferIn[baseIdx + 6u];
+            uint4 a7 = bufferIn[baseIdx + 7u];
 
-            bufferOut[idx] = v0 + 1u;
-            bufferOut[idx + stride] = v1 + 1u;
-            bufferOut[idx + stride * 2u] = v2 + 1u;
-            bufferOut[idx + stride * 3u] = v3 + 1u;
+            bufferOut[baseIdx + 0u] = a0 + 1u;
+            bufferOut[baseIdx + 1u] = a1 + 1u;
+            bufferOut[baseIdx + 2u] = a2 + 1u;
+            bufferOut[baseIdx + 3u] = a3 + 1u;
+            bufferOut[baseIdx + 4u] = a4 + 1u;
+            bufferOut[baseIdx + 5u] = a5 + 1u;
+            bufferOut[baseIdx + 6u] = a6 + 1u;
+            bufferOut[baseIdx + 7u] = a7 + 1u;
         }
         """, profile: "spirv_1_0");
 
+    /// <summary>
+    /// Pointer-chasing latency compute shader measuring round-trip memory access latency.
+    /// </summary>
     public static uint[] GetShaderLatency() => _spvPointerChase ??= SlangCompiler.CompileToSpirv("""
         [[vk::binding(0, 0)]] RWStructuredBuffer<uint> buffer;
         [numthreads(1, 1, 1)]

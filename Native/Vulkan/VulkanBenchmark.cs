@@ -41,7 +41,7 @@ public unsafe struct VkPhysicalDeviceCooperativeMatrix2FeaturesNV
 
 /// <summary>
 /// Execution orchestrator for Vulkan compute stress testing and real-time telemetry.
-/// Supports dynamic pipeline resolution across KHR, NV1, and NV2 matrix backends.
+/// Fully adaptive to physical GPU silicon topology, memory hierarchy, and Vulkan 1.0 specifications.
 /// </summary>
 public sealed unsafe class VulkanStressBenchmark : IDisposable
 {
@@ -49,7 +49,8 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private const int WinHeight = PixelUiEngine.BaseHeight;
     private const int InFlightFrames = 2;
 
-    private const nuint BufferSize = 256 * 1024 * 1024; // 256 MB Device-Local SSBO
+    private ulong _totalVramBytes;
+    private ulong _vramSweepSizeBytes;
 
     private uint _wgAluAndL1;
     private uint _wgL3Cache;
@@ -133,7 +134,10 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         ["mat_int4"]     = new("mat_int4",     VulkanShaders.MAT_INT4_OPS_PER_INVOCATION, "IOP"),
         ["mat_int16"]    = new("mat_int16",    VulkanShaders.MAT_INT16_OPS_PER_INVOCATION,"IOP"),
         ["mat_int32"]    = new("mat_int32",    VulkanShaders.MAT_INT32_OPS_PER_INVOCATION,"IOP"),
-        ["mat_int64"]    = new("mat_int64",    VulkanShaders.MAT_INT64_OPS_PER_INVOCATION,"IOP")
+        ["mat_int64"]    = new("mat_int64",    VulkanShaders.MAT_INT64_OPS_PER_INVOCATION,"IOP"),
+
+        ["mat_mod_nv1"]  = new("mat_mod_nv1",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP"),
+        ["mat_mod_nv2"]  = new("mat_mod_nv2",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP")
     };
 
     private static int GetBatchCount(string id) => id switch
@@ -159,7 +163,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     }
 
     /// <summary>
-    /// Dynamically selects the execution pipeline variant (KHR, NV1, or NV2) based on UI switches and hardware fallback.
+    /// Dynamically resolves the active pipeline based on runtime UI switches and silicon support.
     /// </summary>
     private Pipeline ResolvePipeline(string testId)
     {
@@ -245,6 +249,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         for (int i = 0; i < instExtensions.Count; i++)
             ppInstExts[i] = (byte*)SilkMarshal.StringToPtr(instExtensions[i]);
 
+        // Targeted strictly at core Vulkan 1.0 (release 2016)
         ApplicationInfo appInfo = new()
         {
             SType = StructureType.ApplicationInfo,
@@ -252,7 +257,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             ApplicationVersion = Vk.MakeVersion(1, 0, 0),
             PEngineName = (byte*)SilkMarshal.StringToPtr("GPU-T"),
             EngineVersion = Vk.MakeVersion(1, 0, 0),
-            ApiVersion = Vk.Version11
+            ApiVersion = Vk.Version10
         };
 
         InstanceCreateInfo instInfo = new()
@@ -282,17 +287,103 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _vk.EnumeratePhysicalDevices(_instance, &devCount, pDevs);
 
         int gpuIdx = Math.Clamp(selectedGpuIndex, 0, (int)devCount - 1);
-        _physicalDevice = pDevs[gpuIdx];
+        // 1. Gathering a full list of available physical GPUs
+PhysicalDevice selectedDevice = default;
+PhysicalDevice fallbackHardwareDevice = default;
+string chosenDeviceName = "";
+
+for (uint i = 0; i < devCount; i++)
+{
+    PhysicalDeviceProperties props;
+    _vk.GetPhysicalDeviceProperties(pDevs[i], &props);
+    string devName = SilkMarshal.PtrToString((nint)props.DeviceName);
+
+    // Software emulation detection (Lavapipe, LLVMpipe, SwiftShader)
+    bool isSoftware = props.DeviceType == PhysicalDeviceType.Cpu
+        || devName.Contains("llvmpipe", StringComparison.OrdinalIgnoreCase)
+        || devName.Contains("lavapipe", StringComparison.OrdinalIgnoreCase)
+        || devName.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
+
+    if (!isSoftware && fallbackHardwareDevice.Handle == 0)
+    {
+        // Remembering the first found real GPU (discrete or integrated)
+        fallbackHardwareDevice = pDevs[i];
+    }
+
+    if (i == (uint)selectedGpuIndex)
+    {
+        if (isSoftware)
+        {
+            Console.WriteLine($"[GPU-T Warning] Selected device '{devName}' is a software emulation layer.");
+        }
+        else
+        {
+            selectedDevice = pDevs[i];
+            chosenDeviceName = devName;
+        }
+    }
+}
+
+// 2. If selected index is a software emulator:
+if (selectedDevice.Handle == 0)
+{
+    if (fallbackHardwareDevice.Handle != 0)
+    {
+        // Automatically switch to a physical GPU if available
+        selectedDevice = fallbackHardwareDevice;
+        PhysicalDeviceProperties fbProps;
+        _vk.GetPhysicalDeviceProperties(selectedDevice, &fbProps);
+        string fbName = SilkMarshal.PtrToString((nint)fbProps.DeviceName);
+        Console.WriteLine($"[GPU-T Info] Automatically switched to physical GPU: '{fbName}'.");
+    }
+    else
+    {
+        // If system has no physical GPU - give an readable error
+        throw new NotSupportedException(
+            "Software GPU emulation (Lavapipe / LLVMpipe / SwiftShader) is not supported! " +
+            "GPU-T is a physical silicon stress test and requires a hardware GPU (AMD, NVIDIA, or Intel).");
+    }
+}
+
+_physicalDevice = selectedDevice;
 
         _capabilityProbe = new VulkanCapabilityProbe(_vk, _physicalDevice, _instance, mockTarget);
         _testRegistry = new VulkanTestRegistry(_capabilityProbe);
         _deviceName = _capabilityProbe.DeviceName;
 
-        uint cuCount = Math.Clamp(_capabilityProbe.L2CacheSizeBytes / (64 * 1024), 16u, 160u);
-        _wgAluAndL1 = cuCount * 64;
-        _wgMatrix   = cuCount * 32;
-        _wgL3Cache  = cuCount * 64;
-        _wgVramBus  = 16384;
+        // Query physical dedicated device-local VRAM
+        PhysicalDeviceMemoryProperties memProps;
+        _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
+        ulong maxLocalHeap = 0;
+        for (uint i = 0; i < memProps.MemoryHeapCount; i++)
+        {
+            if ((memProps.MemoryHeaps[(int)i].Flags & MemoryHeapFlags.DeviceLocalBit) != 0)
+            {
+                if (memProps.MemoryHeaps[(int)i].Size > maxLocalHeap)
+                    maxLocalHeap = memProps.MemoryHeaps[(int)i].Size;
+            }
+        }
+        _totalVramBytes = maxLocalHeap > 0 ? maxLocalHeap : 4UL * 1024 * 1024 * 1024;
+
+        // Adaptive sweep buffer calculation based on physical cache sizes from capability probe
+        ulong maxCacheBytes = _capabilityProbe.L3CacheSizeBytes > 0
+            ? _capabilityProbe.L3CacheSizeBytes
+            : (_capabilityProbe.L2CacheSizeBytes > 0 ? _capabilityProbe.L2CacheSizeBytes : 4UL * 1024 * 1024);
+
+        // VRAM sweep buffer must exceed the largest cache by at least 4x-8x to force true GDDR/HBM bus saturation
+        ulong targetSweep = Math.Max(256UL * 1024 * 1024, maxCacheBytes * 4UL);
+        ulong maxAllowedSweep = Math.Clamp(_totalVramBytes / 4UL, 64UL * 1024 * 1024, 1024UL * 1024 * 1024);
+_vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
+
+        uint cuEstimate = Math.Clamp(_capabilityProbe.L2CacheSizeBytes / (64u * 1024u), 20u, 160u);
+        _wgAluAndL1 = cuEstimate * 64u;
+        _wgMatrix   = cuEstimate * 32u;
+        _wgL3Cache  = cuEstimate * 64u;
+
+        // Total threads needed to stream half the buffer as read and half as write (128 bytes read, 128 bytes write per thread)
+        uint halfSweepBytes = (uint)(_vramSweepSizeBytes / 2UL);
+        uint threadsNeeded = halfSweepBytes / 128u;
+        _wgVramBus = (threadsNeeded + 63u) / 64u;
 
         uint qfCount = 0;
         _vk.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &qfCount, null);
@@ -315,11 +406,12 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         InitializeLogicalDevice();
 
+        nuint allocBufferSize = (nuint)_vramSweepSizeBytes;
         BufferCreateInfo bufInfo = new()
         {
             SType = StructureType.BufferCreateInfo,
             PNext = null,
-            Size = BufferSize,
+            Size = allocBufferSize,
             Usage = BufferUsageFlags.StorageBufferBit,
             SharingMode = SharingMode.Exclusive
         };
@@ -328,9 +420,6 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         MemoryRequirements memReqs;
         _vk.GetBufferMemoryRequirements(_device, _ssboBuffer, &memReqs);
-
-        PhysicalDeviceMemoryProperties memProps;
-        _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
 
         uint memTypeIdx = uint.MaxValue;
         for (uint i = 0; i < memProps.MemoryTypeCount; i++)
@@ -415,10 +504,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             _vk.AllocateDescriptorSets(_device, &dsAlloc, pSet);
         }
 
+        nuint halfRange = allocBufferSize / 2;
         DescriptorBufferInfo* descBufInfos = stackalloc DescriptorBufferInfo[3];
-        descBufInfos[0] = new() { Buffer = _ssboBuffer, Offset = 0, Range = BufferSize };
-        descBufInfos[1] = new() { Buffer = _ssboBuffer, Offset = 32 * 1024 * 1024, Range = 32 * 1024 * 1024 };
-        descBufInfos[2] = new() { Buffer = _ssboBuffer, Offset = 64 * 1024 * 1024, Range = 32 * 1024 * 1024 };
+        descBufInfos[0] = new() { Buffer = _ssboBuffer, Offset = 0, Range = allocBufferSize };
+        descBufInfos[1] = new() { Buffer = _ssboBuffer, Offset = halfRange, Range = halfRange };
+        descBufInfos[2] = new() { Buffer = _ssboBuffer, Offset = 0, Range = allocBufferSize };
 
         WriteDescriptorSet* writeDs = stackalloc WriteDescriptorSet[3];
         for (uint b = 0; b < 3; b++)
@@ -557,6 +647,16 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             devExtensions.Add("VK_NV_cooperative_matrix2");
         }
 
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_shader_bfloat16"))
+        {
+            devExtensions.Add("VK_KHR_shader_bfloat16");
+        }
+
+        if (_capabilityProbe.IsExtensionSupported("VK_EXT_shader_float8"))
+        {
+            devExtensions.Add("VK_EXT_shader_float8");
+        }
+
         VkPhysicalDeviceFeatures2KHR feat2 = default;
         feat2.sType = VulkanConstants.StructureTypePhysicalDeviceFeatures2KHR;
         feat2.features.ShaderFloat64 = _capabilityProbe.HasFloat64;
@@ -620,7 +720,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _vk.CmdBindPipeline(cb, PipelineBindPoint.Compute, initPipe);
         var ds = _descSet;
         _vk.CmdBindDescriptorSets(cb, PipelineBindPoint.Compute, _pipeLayout, 0, 1, &ds, 0, null);
-        _vk.CmdDispatch(cb, (uint)(BufferSize / (sizeof(uint) * 64)), 1, 1);
+        _vk.CmdDispatch(cb, (uint)(_vramSweepSizeBytes / (sizeof(uint) * 64)), 1, 1);
         _vk.EndCommandBuffer(cb);
 
         SubmitInfo submit = new() { SType = StructureType.SubmitInfo, CommandBufferCount = 1, PCommandBuffers = &cb };
@@ -653,8 +753,10 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         byte* pMain = stackalloc byte[] { (byte)'m', (byte)'a', (byte)'i', (byte)'n', 0 };
 
-        // 0x00000008 = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT
-        PipelineShaderStageCreateFlags flags = isCoopMat ? (PipelineShaderStageCreateFlags)8 : 0;
+        // 0x00000008 = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT
+        // Only valid if VK_EXT_subgroup_size_control is enabled on the logical device
+        bool hasSubgroupControl = _capabilityProbe.IsExtensionSupported("VK_EXT_subgroup_size_control");
+        PipelineShaderStageCreateFlags flags = (isCoopMat && hasSubgroupControl) ? (PipelineShaderStageCreateFlags)8 : 0;
 
         PipelineShaderStageCreateInfo stageInfo = new()
         {
@@ -819,6 +921,16 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         CommandBufferBeginInfo cbBegin = new() { SType = StructureType.CommandBufferBeginInfo, PNext = null, Flags = CommandBufferUsageFlags.SimultaneousUseBit };
         var ds = _descSet;
+
+        foreach (var item in _testRegistry.Items)
+{
+    if (item.IsChecked && item.IsSupported && HasPipelineFor(item.Id))
+    {
+        if (item.Id == "mem_l3" && !_capabilityProbe.HasL3InfinityCache) continue;
+        if (item.Id == "mem_l1l2" && _capabilityProbe.L2CacheSizeBytes == 0) continue; // <-- Защита от встроек
+        activeList.Add(item.Id);
+    }
+}
 
         foreach (var testId in _activeTestSnapshot)
         {
@@ -1119,16 +1231,21 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             double matBf16Tops = _testRegistry.IsActive("mat_bf16") ? GetWorkloadTops("mat_bf16", GetDps("mat_bf16")) : 0.0;
             double matInt8Tops = _testRegistry.IsActive("mat_int8") ? GetWorkloadTops("mat_int8", GetDps("mat_int8")) : 0.0;
 
+            // Accurate L1/L2 calculation: 64 threads * 544 bytes = 34,816 bytes per workgroup
+            const double l2BytesPerGroup = 64.0 * 544.0;
             double cacheL1L2Tbs = (_testRegistry.IsActive("mem_l1l2") && HasPipelineFor("mem_l1l2"))
-                ? (GetDps("mem_l1l2") * (_wgAluAndL1 * 65536.0)) / 1_000_000_000_000.0
+                ? (GetDps("mem_l1l2") * (_wgAluAndL1 * l2BytesPerGroup)) / 1_000_000_000_000.0
                 : 0.0;
 
+            // Accurate L3 calculation: 64 threads * 288 bytes = 18,432 bytes per workgroup
+            const double l3BytesPerGroup = 64.0 * 288.0;
             double cacheL3Tbs = (_testRegistry.IsActive("mem_l3") && _capabilityProbe.HasL3InfinityCache && HasPipelineFor("mem_l3"))
-                ? (GetDps("mem_l3") * (_wgL3Cache * 32768.0)) / 1_000_000_000_000.0
+                ? (GetDps("mem_l3") * (_wgL3Cache * l3BytesPerGroup)) / 1_000_000_000_000.0
                 : 0.0;
 
+            // Accurate dynamic VRAM bus throughput: exactly _vramSweepSizeBytes bytes streamed per dispatch
             double memBandwidthGbs = (_testRegistry.IsActive("mem_bw") && HasPipelineFor("mem_bw"))
-                ? (GetDps("mem_bw") * 268_435_456.0) / 1_000_000_000.0
+                ? (GetDps("mem_bw") * (double)_vramSweepSizeBytes) / 1_000_000_000.0
                 : 0.0;
 
             double latDps = GetDps("mem_lat");

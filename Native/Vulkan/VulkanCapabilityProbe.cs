@@ -227,7 +227,7 @@ public sealed unsafe class VulkanCapabilityProbe
             return;
         }
 
-        uint defaultL2Kb = DeviceType == PhysicalDeviceType.IntegratedGpu ? 512u : 2048u;
+        uint defaultL2Kb = DeviceType == PhysicalDeviceType.IntegratedGpu ? 0u : 2048u;
 
         var (rules, vendorDefaultL2Kb) = VendorId switch
         {

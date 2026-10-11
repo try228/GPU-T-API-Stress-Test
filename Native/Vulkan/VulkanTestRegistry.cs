@@ -62,7 +62,7 @@ public sealed class VulkanTestRegistry
 
         // 3. VRAM & CACHES
         Items.Add(new("mem_bw",   "VRAM Stream BW",    "VRAM & CACHES", true, "GB/s"));
-        Items.Add(new("mem_l1l2", "L1/L2 Cache BW",    "VRAM & CACHES", true, "GB/s"));
+        Items.Add(new("mem_l1l2", "L1/L2 Cache BW",    "VRAM & CACHES", probe.L2CacheSizeBytes > 0, "GB/s"));
         Items.Add(new("mem_l3",   "L3/Infinity Cache", "VRAM & CACHES", probe.HasL3InfinityCache, "GB/s"));
         Items.Add(new("mem_lat",  "Pointer Latency",   "VRAM & CACHES", true, "ns"));
 
