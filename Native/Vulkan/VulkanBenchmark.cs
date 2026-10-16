@@ -53,7 +53,7 @@ public unsafe struct VkPhysicalDeviceShaderFloat8FeaturesEXT
 }
 
 /// <summary>
-/// Execution orchestrator for Vulkan compute stress testing and real-time telemetry.
+/// Execution orchestrator for Vulkan compute and hardware Ray Tracing stress testing.
 /// Adaptive to physical silicon architecture, memory hierarchy, and Vulkan 1.0 specifications.
 /// </summary>
 public sealed unsafe class VulkanStressBenchmark : IDisposable
@@ -132,6 +132,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
     private VulkanCapabilityProbe _capabilityProbe = null!;
     private VulkanTestRegistry _testRegistry = null!;
+    private VulkanRtManager? _rtManager;
 
     private CancellationTokenSource? _computeCts;
     private Thread? _computeThread;
@@ -168,40 +169,80 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         ["mat_mod_nv1"]  = new("mat_mod_nv1",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP"),
         ["mat_mod_nv2"]  = new("mat_mod_nv2",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP"),
 
-        ["tmu_bdt"]   = new("tmu_bdt",   VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
-        ["tmu_aniso"] = new("tmu_aniso", VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
-        ["tmu_bc"]    = new("tmu_bc",    VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
-        ["tmu_3d"]    = new("tmu_3d",    VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL")
+        ["tmu_bdt"]      = new("tmu_bdt",      VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+        ["tmu_aniso"]    = new("tmu_aniso",    VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+        ["tmu_bc"]       = new("tmu_bc",       VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+        ["tmu_3d"]       = new("tmu_3d",       VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+
+        // Ray Tracing Workloads
+        ["rt_query"]     = new("rt_query",     VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
+        ["rt_pipe"]      = new("rt_pipe",      VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
+        ["rt_ser"]       = new("rt_ser",       VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
+        ["rt_omm"]       = new("rt_omm",       VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
+        ["rt_pos"]       = new("rt_pos",       VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
+        ["rt_nv"]        = new("rt_nv",        VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY")
     };
 
-private static int GetBatchCount(string id) => id switch
-{
-    "alu_fp32" or "alu_fp16" or "alu_bf16" or "alu_int32" or "alu_int16" or "alu_int8" => 256,
-    "alu_dp4a" or "alu_dp2a" => 256,
-    "mat_fp32" or "mat_fp16" or "mat_bf16" or "mat_int8" or "mat_int16" or "mat_int32" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" => 128,
-    "alu_fp64" or "alu_int64" or "mat_fp64" or "mat_int64" or "mat_mod_nv1" or "mat_mod_nv2" => 128,
-    "tmu_bdt" or "tmu_aniso" or "tmu_bc" or "tmu_3d" => 32,
-    "mem_l1l2" => 256,
-    "mem_l3"   => 128,
-    "mem_bw"   => 64,
-    "mem_lat"  => 8,
-    _ => 128
-};
+    private static int GetBatchCount(string id) => id switch
+    {
+        "alu_fp32" or "alu_fp16" or "alu_bf16" or "alu_int32" or "alu_int16" or "alu_int8" => 256,
+        "alu_dp4a" or "alu_dp2a" => 256,
+        "mat_fp32" or "mat_fp16" or "mat_bf16" or "mat_int8" or "mat_int16" or "mat_int32" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" => 128,
+        "alu_fp64" or "alu_int64" or "mat_fp64" or "mat_int64" or "mat_mod_nv1" or "mat_mod_nv2" => 128,
+        "rt_query" or "rt_pipe" or "rt_nv" => 64,
+        "tmu_bdt" or "tmu_aniso" or "tmu_bc" or "tmu_3d" => 32,
+        "mem_l1l2" => 256,
+        "mem_l3"   => 128,
+        "mem_bw"   => 64,
+        "mem_lat"  => 8,
+        _ => 128
+    };
 
     private bool HasPipelineFor(string id)
     {
+        if (id.StartsWith("rt_") && id != "rt_nv")
+        {
+            if (_rtManager == null || !_rtManager.IsInitialized) return false;
+        }
+
         if (_pipelines.ContainsKey(id)) return true;
         if (_pipelines.ContainsKey($"{id}_khr")) return true;
         if (_pipelines.ContainsKey($"{id}_nv1")) return true;
         if (_pipelines.ContainsKey($"{id}_nv2")) return true;
+
+        if (id == "rt_query" && (_pipelines.ContainsKey("rt_query_omm") || _pipelines.ContainsKey("rt_query_pos"))) return true;
+        if (id == "rt_pipe" && (_pipelines.ContainsKey("rt_pipe_ser") || _pipelines.ContainsKey("rt_pipe_omm") || _pipelines.ContainsKey("rt_pipe_pos"))) return true;
+
         return false;
     }
 
     /// <summary>
-    /// Dynamically resolves the active pipeline based on runtime UI switches and silicon support.
+    /// Dynamically resolves the active pipeline based on runtime UI switches, modifiers, and silicon support.
     /// </summary>
     private Pipeline ResolvePipeline(string testId)
     {
+        if (testId == "rt_query")
+        {
+            if (_testRegistry.IsActive("rt_omm") && _pipelines.TryGetValue("rt_query_omm", out var pOmm))
+                return pOmm.Pipeline;
+            if (_testRegistry.IsActive("rt_pos") && _pipelines.TryGetValue("rt_query_pos", out var pPos))
+                return pPos.Pipeline;
+            if (_pipelines.TryGetValue("rt_query", out var pDef))
+                return pDef.Pipeline;
+        }
+
+        if (testId == "rt_pipe")
+        {
+            if (_testRegistry.IsActive("rt_ser") && _pipelines.TryGetValue("rt_pipe_ser", out var pSer))
+                return pSer.Pipeline;
+            if (_testRegistry.IsActive("rt_omm") && _pipelines.TryGetValue("rt_pipe_omm", out var pOmm))
+                return pOmm.Pipeline;
+            if (_testRegistry.IsActive("rt_pos") && _pipelines.TryGetValue("rt_pipe_pos", out var pPos))
+                return pPos.Pipeline;
+            if (_pipelines.TryGetValue("rt_pipe", out var pDef))
+                return pDef.Pipeline;
+        }
+
         if (testId.StartsWith("mat_") && testId != "mat_mod_nv1" && testId != "mat_mod_nv2")
         {
             bool forceNv1 = _testRegistry.IsActive("mat_mod_nv1");
@@ -213,7 +254,6 @@ private static int GetBatchCount(string id) => id switch
             if (forceNv2 && _pipelines.TryGetValue($"{testId}_nv2", out var pNv2))
                 return pNv2.Pipeline;
 
-            // Default resolution hierarchy: KHR -> NV2 -> NV1
             if (_pipelines.TryGetValue($"{testId}_khr", out var pKhr))
                 return pKhr.Pipeline;
 
@@ -227,9 +267,6 @@ private static int GetBatchCount(string id) => id switch
         return _pipelines.TryGetValue(testId, out var direct) ? direct.Pipeline : default;
     }
 
-    /// <summary>
-    /// Computes a priority score for physical devices, preferring Discrete GPUs over Integrated GPUs and strictly rejecting software emulation layers.
-    /// </summary>
     private static int EvaluateDeviceScore(PhysicalDeviceProperties props, string devName)
     {
         bool isSoftware = props.DeviceType == PhysicalDeviceType.Cpu
@@ -251,9 +288,6 @@ private static int GetBatchCount(string id) => id switch
         };
     }
 
-    /// <summary>
-    /// Main entry point executing the benchmark session.
-    /// </summary>
     public static void Run(
         CancellationToken hostCt,
         int initialDuration = 0,
@@ -311,7 +345,6 @@ private static int GetBatchCount(string id) => id switch
         for (int i = 0; i < instExtensions.Count; i++)
             ppInstExts[i] = (byte*)SilkMarshal.StringToPtr(instExtensions[i]);
 
-        // Targeted strictly at core Vulkan 1.0 specifications
         ApplicationInfo appInfo = new()
         {
             SType = StructureType.ApplicationInfo,
@@ -348,7 +381,6 @@ private static int GetBatchCount(string id) => id switch
         Unsafe.InitBlock(pDevs, 0, (uint)(sizeof(PhysicalDevice) * devCount));
         _vk.EnumeratePhysicalDevices(_instance, &devCount, pDevs);
 
-        // Hardware device scoring and software emulation rejection
         PhysicalDevice bestDevice = default;
         int bestScore = -1;
         string bestDeviceName = "";
@@ -363,11 +395,7 @@ private static int GetBatchCount(string id) => id switch
 
             if (i == (uint)selectedGpuIndex)
             {
-                if (score <= 0)
-                {
-                    Console.WriteLine($"[GPU-T Warning] Selected device '{devName}' is not a physical hardware GPU (Score: {score}).");
-                }
-                else
+                if (score > 0)
                 {
                     bestDevice = pDevs[i];
                     bestScore = score;
@@ -386,18 +414,14 @@ private static int GetBatchCount(string id) => id switch
 
         if (bestScore <= 0 || bestDevice.Handle == 0)
         {
-            throw new NotSupportedException(
-                "No compatible physical GPU found! GPU-T requires dedicated hardware (Discrete or Integrated GPU). " +
-                "Software emulation (Lavapipe/LLVMpipe/SwiftShader) and Virtual GPUs (VirtIO/Venus) are strictly unsupported.");
+            throw new NotSupportedException("No compatible physical GPU found! GPU-T requires dedicated hardware.");
         }
 
         _physicalDevice = bestDevice;
-
         _capabilityProbe = new VulkanCapabilityProbe(_vk, _physicalDevice, _instance, mockTarget);
         _testRegistry = new VulkanTestRegistry(_capabilityProbe);
         _deviceName = _capabilityProbe.DeviceName;
 
-        // Query physical dedicated device-local VRAM
         PhysicalDeviceMemoryProperties memProps;
         _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
         ulong maxLocalHeap = 0;
@@ -411,23 +435,20 @@ private static int GetBatchCount(string id) => id switch
         }
         _totalVramBytes = maxLocalHeap > 0 ? maxLocalHeap : 4UL * 1024 * 1024 * 1024;
 
-        // Adaptive sweep buffer calculation based on physical cache sizes from capability probe
         ulong maxCacheBytes = _capabilityProbe.L3CacheSizeBytes > 0
             ? _capabilityProbe.L3CacheSizeBytes
             : (_capabilityProbe.L2CacheSizeBytes > 0 ? _capabilityProbe.L2CacheSizeBytes : 4UL * 1024 * 1024);
 
-        // VRAM sweep buffer must exceed the largest cache by at least 4x-8x to force true GDDR/HBM bus saturation
         ulong targetSweep = Math.Max(256UL * 1024 * 1024, maxCacheBytes * 4UL);
         ulong maxAllowedSweep = Math.Clamp(_totalVramBytes / 4UL, 64UL * 1024 * 1024, 1024UL * 1024 * 1024);
         _vramSweepSizeBytes = Math.Min(targetSweep, maxAllowedSweep);
-        _vramSweepSizeBytes = (_vramSweepSizeBytes + 0x00FFFFFFUL) & ~0x00FFFFFFUL; // 16 MB boundary alignment
+        _vramSweepSizeBytes = (_vramSweepSizeBytes + 0x00FFFFFFUL) & ~0x00FFFFFFUL;
 
         uint cuEstimate = Math.Clamp(_capabilityProbe.L2CacheSizeBytes / (64u * 1024u), 20u, 160u);
         _wgAluAndL1 = cuEstimate * 64u;
         _wgMatrix   = cuEstimate * 32u;
         _wgL3Cache  = cuEstimate * 64u;
 
-        // Total threads needed to stream half the buffer as read and half as write (128 bytes read, 128 bytes write per thread)
         uint halfSweepBytes = (uint)(_vramSweepSizeBytes / 2UL);
         uint threadsNeeded = halfSweepBytes / 128u;
         _wgVramBus = (threadsNeeded + 63u) / 64u;
@@ -439,22 +460,24 @@ private static int GetBatchCount(string id) => id switch
         _vk.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &qfCount, pQf);
 
         int bestQueue = -1;
-for (uint i = 0; i < qfCount; i++)
-{
-    var flags = pQf[i].QueueFlags;
-    if (flags.HasFlag(QueueFlags.ComputeBit) && flags.HasFlag(QueueFlags.GraphicsBit))
-    {
-        bestQueue = (int)i;
-        break;
-    }
-    if (flags.HasFlag(QueueFlags.ComputeBit) && bestQueue == -1)
-        bestQueue = (int)i;
-}
+        for (uint i = 0; i < qfCount; i++)
+        {
+            var flags = pQf[i].QueueFlags;
+            if (flags.HasFlag(QueueFlags.ComputeBit) && flags.HasFlag(QueueFlags.GraphicsBit))
+            {
+                bestQueue = (int)i;
+                break;
+            }
+            if (flags.HasFlag(QueueFlags.ComputeBit) && bestQueue == -1)
+                bestQueue = (int)i;
+        }
 
-        // 1. Initialize Logical Device (must complete before any buffers, descriptors, or pipelines are created)
+        _computeQueueFamilyIndex = (uint)bestQueue;
+
+        // 1. Create Logical Device with Ray Tracing & BDA Features Chained
         InitializeLogicalDevice();
 
-        // 2. Allocate SSBO buffer memory
+        // 2. Allocate SSBO Buffer Memory
         nuint allocBufferSize = (nuint)_vramSweepSizeBytes;
         BufferCreateInfo bufInfo = new()
         {
@@ -494,8 +517,35 @@ for (uint i = 0; i < qfCount; i++)
         _vk.AllocateMemory(_device, &allocInfo, null, out _ssboMemory);
         _vk.BindBufferMemory(_device, _ssboBuffer, _ssboMemory, 0);
 
-       // 3. Create Descriptor Set Layout and Pipeline Layout (3 SSBO + 4 CombinedImageSampler)
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[7];
+        // 3. Create Command Pool & Fences early so RT Manager can execute build commands
+        CommandPoolCreateInfo cpInfo = new()
+        {
+            SType = StructureType.CommandPoolCreateInfo,
+            PNext = null,
+            QueueFamilyIndex = _computeQueueFamilyIndex,
+            Flags = CommandPoolCreateFlags.ResetCommandBufferBit
+        };
+
+        _vk.CreateCommandPool(_device, &cpInfo, null, out _cmdPool);
+
+        for (int i = 0; i < InFlightFrames; i++)
+        {
+            FenceCreateInfo fenceInfo = new() { SType = StructureType.FenceCreateInfo, PNext = null, Flags = FenceCreateFlags.SignaledBit };
+            _vk.CreateFence(_device, &fenceInfo, null, out _inFlightFences[i]);
+        }
+
+        // 4. Initialize Hardware Acceleration Structure Manager (before creating Descriptor Set Layout)
+        bool hasAs = false;
+        if (_capabilityProbe.HasAccelerationStructure && _capabilityProbe.IsExtensionSupported("VK_KHR_acceleration_structure"))
+        {
+            _rtManager = new VulkanRtManager(_vk, _device, _physicalDevice, _computeQueue, _cmdPool, memProps);
+            hasAs = _rtManager.Initialize();
+        }
+
+        // 5. Create Descriptor Set Layout (3 SSBO + 4 TMU + 1 TLAS if supported and built)
+        uint totalBindings = hasAs ? 8u : 7u;
+
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[(int)totalBindings];
         for (uint b = 0; b < 3; b++)
         {
             bindings[b] = new()
@@ -517,11 +567,22 @@ for (uint i = 0; i < qfCount; i++)
             };
         }
 
+        if (hasAs)
+        {
+            bindings[7] = new()
+            {
+                Binding = 7,
+                DescriptorType = (DescriptorType)1000150000, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            };
+        }
+
         DescriptorSetLayoutCreateInfo dslInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
             PNext = null,
-            BindingCount = 7,
+            BindingCount = totalBindings,
             PBindings = bindings
         };
 
@@ -538,16 +599,22 @@ for (uint i = 0; i < qfCount; i++)
 
         _vk.CreatePipelineLayout(_device, &plInfo, null, out _pipeLayout);
 
-        DescriptorPoolSize* poolSizes = stackalloc DescriptorPoolSize[2];
+        // 6. Create Descriptor Pool
+        uint poolCount = hasAs ? 3u : 2u;
+        DescriptorPoolSize* poolSizes = stackalloc DescriptorPoolSize[(int)poolCount];
         poolSizes[0] = new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 };
         poolSizes[1] = new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = 4 };
+        if (hasAs)
+        {
+            poolSizes[2] = new() { Type = (DescriptorType)1000150000, DescriptorCount = 1 };
+        }
 
         DescriptorPoolCreateInfo dpInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
             PNext = null,
             MaxSets = 1,
-            PoolSizeCount = 2,
+            PoolSizeCount = poolCount,
             PPoolSizes = poolSizes
         };
 
@@ -567,7 +634,7 @@ for (uint i = 0; i < qfCount; i++)
             _vk.AllocateDescriptorSets(_device, &dsAlloc, pSet);
         }
 
-        // Configure descriptors: Binding 0 covers full buffer, Binding 1 is offset for streaming write buffer
+        // 7. Write SSBO Descriptors (Bindings 0..2)
         nuint halfRange = allocBufferSize / 2;
         DescriptorBufferInfo* descBufInfos = stackalloc DescriptorBufferInfo[3];
         descBufInfos[0] = new() { Buffer = _ssboBuffer, Offset = 0, Range = allocBufferSize };
@@ -591,32 +658,41 @@ for (uint i = 0; i < qfCount; i++)
 
         _vk.UpdateDescriptorSets(_device, 3, writeDs, 0, null);
 
-        // 4. Create Command Pool and Synchronization Fences
-        CommandPoolCreateInfo cpInfo = new()
-        {
-            SType = StructureType.CommandPoolCreateInfo,
-            PNext = null,
-            QueueFamilyIndex = _computeQueueFamilyIndex,
-            Flags = CommandPoolCreateFlags.ResetCommandBufferBit
-        };
+        // 8. Initialize Textures (Bindings 3..6)
+        InitializeTmuResources(memProps);
 
-        _vk.CreateCommandPool(_device, &cpInfo, null, out _cmdPool);
-
-        for (int i = 0; i < InFlightFrames; i++)
+        // 9. Write Acceleration Structure Descriptor (Binding 7)
+        if (hasAs && _rtManager != null && _rtManager.IsInitialized)
         {
-            FenceCreateInfo fenceInfo = new() { SType = StructureType.FenceCreateInfo, PNext = null, Flags = FenceCreateFlags.SignaledBit };
-            _vk.CreateFence(_device, &fenceInfo, null, out _inFlightFences[i]);
+            var tlasHandle = _rtManager.Tlas;
+            VkWriteDescriptorSetAccelerationStructureKHR asWrite = new()
+            {
+                sType = VulkanConstants.StructureTypeWriteDescriptorSetAccelerationStructureKHR,
+                pNext = null,
+                accelerationStructureCount = 1,
+                pAccelerationStructures = &tlasHandle
+            };
+
+            WriteDescriptorSet write = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                PNext = &asWrite,
+                DstSet = _descSet,
+                DstBinding = 7,
+                DescriptorType = (DescriptorType)1000150000,
+                DescriptorCount = 1
+            };
+
+            _vk.UpdateDescriptorSets(_device, 1, &write, 0, null);
         }
 
-        // 5. Initialize Compute Pipelines & Resources
-        InitializeTmuResources(memProps);
+        // 10. Register Compute & Ray Tracing Pipelines
         InitializePipelines();
         InitializeBufferOnGpu();
     }
 
     /// <summary>
-    /// Configures device extensions and physical device features, then creates the VkDevice handle.
-    /// Strictly handles device creation without invoking pipeline registrations.
+    /// Configures device extensions and physical device features including Hardware Ray Tracing, then creates the VkDevice handle.
     /// </summary>
     private void InitializeLogicalDevice()
     {
@@ -635,7 +711,109 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_EXT_subgroup_size_control");
         }
 
-        // StorageBuffer 16-Bit Features
+        // Buffer Device Address (Required by KHR RT / Acceleration Structure)
+        VkPhysicalDeviceBufferDeviceAddressFeaturesKHR bdaFeatures = default;
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_buffer_device_address"))
+        {
+            bdaFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceBufferDeviceAddressFeaturesKHR;
+            bdaFeatures.bufferDeviceAddress = 1u;
+            bdaFeatures.pNext = pNextChain;
+            pNextChain = &bdaFeatures;
+            devExtensions.Add("VK_KHR_buffer_device_address");
+        }
+
+        // Acceleration Structure
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures = default;
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_acceleration_structure") && _capabilityProbe.HasAccelerationStructure)
+        {
+            asFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceAccelerationStructureFeaturesKHR;
+            asFeatures.accelerationStructure = 1u;
+            asFeatures.pNext = pNextChain;
+            pNextChain = &asFeatures;
+            devExtensions.Add("VK_KHR_acceleration_structure");
+
+            if (_capabilityProbe.IsExtensionSupported("VK_KHR_deferred_host_operations"))
+                devExtensions.Add("VK_KHR_deferred_host_operations");
+        }
+
+        // Ray Query (Inline HW RT)
+        VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures = default;
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_ray_query") && _capabilityProbe.HasRayQuery)
+        {
+            rqFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceRayQueryFeaturesKHR;
+            rqFeatures.rayQuery = 1u;
+            rqFeatures.pNext = pNextChain;
+            pNextChain = &rqFeatures;
+            devExtensions.Add("VK_KHR_ray_query");
+        }
+
+        // Ray Tracing Pipeline
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtpFeatures = default;
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_ray_tracing_pipeline") && _capabilityProbe.HasRTPipeline)
+        {
+            rtpFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceRayTracingPipelineFeaturesKHR;
+            rtpFeatures.rayTracingPipeline = 1u;
+            rtpFeatures.pNext = pNextChain;
+            pNextChain = &rtpFeatures;
+            devExtensions.Add("VK_KHR_ray_tracing_pipeline");
+        }
+
+        // Shader Execution Reordering (SER)
+        VkPhysicalDeviceRayTracingInvocationReorderFeaturesNV serFeatures = default;
+        if (_capabilityProbe.HasSER)
+        {
+            serFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceRayTracingInvocationReorderFeaturesNV;
+            serFeatures.rayTracingInvocationReorder = 1u;
+            serFeatures.pNext = pNextChain;
+            pNextChain = &serFeatures;
+
+            if (_capabilityProbe.IsExtensionSupported("VK_KHR_ray_tracing_invocation_reorder"))
+                devExtensions.Add("VK_KHR_ray_tracing_invocation_reorder");
+            else if (_capabilityProbe.IsExtensionSupported("VK_NV_ray_tracing_invocation_reorder"))
+                devExtensions.Add("VK_NV_ray_tracing_invocation_reorder");
+        }
+
+        // Opacity Micromap (OMM)
+        VkPhysicalDeviceOpacityMicromapFeaturesEXT ommFeatures = default;
+        if (_capabilityProbe.HasOMM)
+        {
+            ommFeatures.sType = VulkanConstants.StructureTypeOpacityMicromapFeaturesEXT;
+            ommFeatures.micromap = 1u;
+            ommFeatures.pNext = pNextChain;
+            pNextChain = &ommFeatures;
+
+            if (_capabilityProbe.IsExtensionSupported("VK_EXT_opacity_micromap"))
+                devExtensions.Add("VK_EXT_opacity_micromap");
+            else if (_capabilityProbe.IsExtensionSupported("VK_KHR_opacity_micromap"))
+                devExtensions.Add("VK_KHR_opacity_micromap");
+        }
+
+        // Ray Tracing Position Fetch
+        VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR posFeatures = default;
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_ray_tracing_position_fetch") && _capabilityProbe.HasRTPositionFetch)
+        {
+            posFeatures.sType = VulkanConstants.StructureTypePhysicalDeviceRayTracingPositionFetchFeaturesKHR;
+            posFeatures.rayTracingPositionFetch = 1u;
+            posFeatures.pNext = pNextChain;
+            pNextChain = &posFeatures;
+            devExtensions.Add("VK_KHR_ray_tracing_position_fetch");
+        }
+
+        // Legacy NVIDIA Ray Tracing (2018)
+        if (_capabilityProbe.IsExtensionSupported("VK_NV_ray_tracing") && _capabilityProbe.HasNVRayTracing)
+        {
+            devExtensions.Add("VK_NV_ray_tracing");
+        }
+
+        // SPIR-V 1.4 Optional Driver Activation
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_spirv_1_4"))
+        {
+            devExtensions.Add("VK_KHR_spirv_1_4");
+            if (_capabilityProbe.IsExtensionSupported("VK_KHR_shader_float_controls"))
+                devExtensions.Add("VK_KHR_shader_float_controls");
+        }
+
+        // 16-Bit Storage
         VkPhysicalDevice16BitStorageFeaturesKHR storage16 = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_16bit_storage"))
         {
@@ -647,7 +825,7 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_KHR_16bit_storage");
         }
 
-        // StorageBuffer 8-Bit Features
+        // 8-Bit Storage
         VkPhysicalDevice8BitStorageFeaturesKHR storage8 = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_8bit_storage"))
         {
@@ -696,7 +874,7 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_KHR_cooperative_matrix");
         }
 
-        // NVIDIA Cooperative Matrix 1 (VK_NV_cooperative_matrix)
+        // NVIDIA Cooperative Matrix 1
         VkPhysicalDeviceCooperativeMatrixFeaturesNV coopNvFeatures = default;
         if (_capabilityProbe.IsExtensionSupported("VK_NV_cooperative_matrix"))
         {
@@ -707,7 +885,7 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_NV_cooperative_matrix");
         }
 
-        // NVIDIA Cooperative Matrix 2 (VK_NV_cooperative_matrix2)
+        // NVIDIA Cooperative Matrix 2
         VkPhysicalDeviceCooperativeMatrix2FeaturesNV coopNv2Features = default;
         if (_capabilityProbe.IsExtensionSupported("VK_NV_cooperative_matrix2"))
         {
@@ -718,11 +896,11 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_NV_cooperative_matrix2");
         }
 
-// Vulkan Memory Model (Required by Khronos Cooperative Matrix & modern Slang SPIR-V)
+        // Vulkan Memory Model
         VkPhysicalDeviceVulkanMemoryModelFeaturesKHR memModelFeatures = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_vulkan_memory_model"))
         {
-            memModelFeatures.sType = (StructureType)1000211000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES_KHR
+            memModelFeatures.sType = (StructureType)1000211000;
             memModelFeatures.vulkanMemoryModel = 1u;
             memModelFeatures.vulkanMemoryModelDeviceScope = 1u;
             memModelFeatures.pNext = pNextChain;
@@ -730,11 +908,11 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_KHR_vulkan_memory_model");
         }
 
-        // BFloat16 Hardware Arithmetic (Enables BFloat16TypeKHR capability in SPIR-V)
+        // BFloat16 Hardware Arithmetic
         VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16Features = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_shader_bfloat16"))
         {
-            bf16Features.sType = (StructureType)1000570000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR
+            bf16Features.sType = (StructureType)1000570000;
             bf16Features.shaderBFloat16Type = 1u;
             bf16Features.shaderBFloat16DotProduct = 1u;
             bf16Features.shaderBFloat16CooperativeMatrix = 1u;
@@ -743,11 +921,11 @@ for (uint i = 0; i < qfCount; i++)
             devExtensions.Add("VK_KHR_shader_bfloat16");
         }
 
-        // Float8 Hardware Types (Enables FP8 E4M3 / E5M2 matrix formats)
+        // Float8 Hardware Types
         VkPhysicalDeviceShaderFloat8FeaturesEXT fp8Features = default;
         if (_capabilityProbe.IsExtensionSupported("VK_EXT_shader_float8"))
         {
-            fp8Features.sType = (StructureType)1000588000; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT
+            fp8Features.sType = (StructureType)1000588000;
             fp8Features.shaderFloat8 = 1u;
             fp8Features.pNext = pNextChain;
             fp8Features.shaderFloat8CooperativeMatrix = 1u;
@@ -801,38 +979,21 @@ for (uint i = 0; i < qfCount; i++)
 
     private void InitializeTmuResources(PhysicalDeviceMemoryProperties memProps)
     {
-/// <summary>
-/// Selects an optimal physical device memory type index matching the required buffer/image constraints.
-/// Prioritizes requested property flags (e.g. DeviceLocal) and gracefully falls back to any conformant memory index.
-/// </summary>
-/// <param name="bits">Bitmask of compatible memory type indices reported by vkGetImageMemoryRequirements.</param>
-/// <param name="preferredFlags">Preferred memory property flags (e.g. DeviceLocalBit).</param>
-/// <returns>A valid physical memory type index accepted by the Vulkan specification.</returns>
-/// <exception cref="InvalidOperationException">Thrown when no supported memory type satisfies the allocation constraints.</exception>
-uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
-{
-    // Primary pass: look for a memory type that satisfies both the bitmask and the preferred property flags
-    for (uint i = 0; i < memProps.MemoryTypeCount; i++)
-    {
-        if ((bits & (1u << (int)i)) != 0 && (memProps.MemoryTypes[(int)i].PropertyFlags & preferredFlags) == preferredFlags)
+        uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         {
-            return i;
+            for (uint i = 0; i < memProps.MemoryTypeCount; i++)
+            {
+                if ((bits & (1u << (int)i)) != 0 && (memProps.MemoryTypes[(int)i].PropertyFlags & preferredFlags) == preferredFlags)
+                    return i;
+            }
+            for (uint i = 0; i < memProps.MemoryTypeCount; i++)
+            {
+                if ((bits & (1u << (int)i)) != 0)
+                    return i;
+            }
+            throw new InvalidOperationException("Failed to find a compatible Vulkan memory type.");
         }
-    }
 
-    // Fallback pass: accept any valid memory type permitted by the driver bitmask (avoids hard crashes on unified architectures)
-    for (uint i = 0; i < memProps.MemoryTypeCount; i++)
-    {
-        if ((bits & (1u << (int)i)) != 0)
-        {
-            return i;
-        }
-    }
-
-    throw new InvalidOperationException("Failed to find a compatible Vulkan memory type for TMU resource allocation.");
-}
-
-        // 1. Creating samplers
         SamplerCreateInfo sampInfo = new()
         {
             SType = StructureType.SamplerCreateInfo,
@@ -853,7 +1014,6 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         sampInfo.AnisotropyEnable = false;
         _vk.CreateSampler(_device, &sampInfo, null, out _sampler3D);
 
-        // 2. Creating 2D RGBA8 texture (1024x1024, 11 mip levels)
         ImageCreateInfo img2DInfo = new()
         {
             SType = StructureType.ImageCreateInfo,
@@ -883,8 +1043,7 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         };
         _vk.CreateImageView(_device, &view2DInfo, null, out _tmuView2D);
 
-        // 3. Creating BC texture (1024x1024)
-        Format bcFormat = _capabilityProbe.HasTextureCompressionBC ? (Format)145 /* VK_FORMAT_BC7_UNORM_BLOCK */ : Format.R8G8B8A8Unorm;
+        Format bcFormat = _capabilityProbe.HasTextureCompressionBC ? (Format)145 : Format.R8G8B8A8Unorm;
         ImageCreateInfo imgBCInfo = img2DInfo;
         imgBCInfo.Format = bcFormat;
         imgBCInfo.MipLevels = 1;
@@ -901,7 +1060,6 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         viewBCInfo.SubresourceRange.LevelCount = 1;
         _vk.CreateImageView(_device, &viewBCInfo, null, out _tmuViewBC);
 
-        // 4. Creating 3D texture (128x128x128)
         ImageCreateInfo img3DInfo = new()
         {
             SType = StructureType.ImageCreateInfo,
@@ -931,7 +1089,6 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         };
         _vk.CreateImageView(_device, &view3DInfo, null, out _tmuView3D);
 
-        // 5.
         CommandBufferAllocateInfo cbAlloc = new() { SType = StructureType.CommandBufferAllocateInfo, CommandPool = _cmdPool, Level = CommandBufferLevel.Primary, CommandBufferCount = 1 };
         CommandBuffer cb;
         _vk.AllocateCommandBuffers(_device, &cbAlloc, &cb);
@@ -950,7 +1107,6 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         _vk.QueueWaitIdle(_computeQueue);
         _vk.FreeCommandBuffers(_device, _cmdPool, 1, &cb);
 
-        // 6. Writing descriptors 3, 4, 5, 6
         DescriptorImageInfo* imgInfos = stackalloc DescriptorImageInfo[4];
         imgInfos[0] = new() { Sampler = _samplerLinear, ImageView = _tmuView2D, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
         imgInfos[1] = new() { Sampler = _samplerAniso,  ImageView = _tmuView2D, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
@@ -1027,7 +1183,6 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
 
         byte* pMain = stackalloc byte[] { (byte)'m', (byte)'a', (byte)'i', (byte)'n', 0 };
 
-        // 0x00000008 = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT
         bool hasSubgroupControl = _capabilityProbe.IsExtensionSupported("VK_EXT_subgroup_size_control");
         PipelineShaderStageCreateFlags flags = (isCoopMat && hasSubgroupControl) ? (PipelineShaderStageCreateFlags)8 : 0;
 
@@ -1068,25 +1223,15 @@ uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
         return pipeline;
     }
 
-private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = false)
+    private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = false)
     {
-        if (spirv == null)
-        {
-            Console.WriteLine($"[Pipeline Warning] Skipped '{id}': SPIR-V bytecode is null.");
-            return;
-        }
+        if (spirv == null) return;
         try
         {
             var p = CreateComputePipeline(spirv, isCoopMat, out var sm);
             if (p.Handle != 0)
             {
                 _pipelines[id] = (p, sm);
-            }
-            else
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"[Pipeline Error] CreateComputePipeline returned null handle for '{id}'.");
-                Console.ResetColor();
             }
         }
         catch (Exception ex)
@@ -1098,8 +1243,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
     }
 
     /// <summary>
-    /// Compiles and registers all compute pipeline variants across ALU, Matrix (KHR/NV1/NV2), and Memory domains.
-    /// Executed strictly after logical device and descriptor layouts are fully initialized.
+    /// Compiles and registers all compute pipeline variants across ALU, Ray Tracing, Matrix, and Memory domains.
     /// </summary>
     private void InitializePipelines()
     {
@@ -1121,7 +1265,28 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
                 SafeRegisterPipeline("alu_dp2a", VulkanShaders.GetShaderDP2A(_capabilityProbe));
         }
 
-        // 2. Standard KHR Cooperative Matrix Pipelines (SPIR-V 1.3)
+        // 2. Hardware Ray Tracing Pipelines (SPIR-V 1.4 / Extension-Accelerated)
+        if (_capabilityProbe.HasRayQuery)
+        {
+            SafeRegisterPipeline("rt_query",     VulkanShaders.GetShaderRtQuery(_capabilityProbe));
+            SafeRegisterPipeline("rt_query_omm", VulkanShaders.GetShaderRtQueryOmm(_capabilityProbe));
+            SafeRegisterPipeline("rt_query_pos", VulkanShaders.GetShaderRtQueryPos(_capabilityProbe));
+        }
+
+        if (_capabilityProbe.HasRTPipeline)
+        {
+            SafeRegisterPipeline("rt_pipe",     VulkanShaders.GetShaderRtPipe(_capabilityProbe));
+            SafeRegisterPipeline("rt_pipe_ser", VulkanShaders.GetShaderRtPipeSer(_capabilityProbe));
+            SafeRegisterPipeline("rt_pipe_omm", VulkanShaders.GetShaderRtPipeOmm(_capabilityProbe));
+            SafeRegisterPipeline("rt_pipe_pos", VulkanShaders.GetShaderRtPipePos(_capabilityProbe));
+        }
+
+        if (_capabilityProbe.HasNVRayTracing)
+        {
+            SafeRegisterPipeline("rt_nv", VulkanShaders.GetShaderRtNv(_capabilityProbe));
+        }
+
+        // 3. Standard KHR Cooperative Matrix Pipelines
         if (_capabilityProbe.HasCoopMatrixKHR)
         {
             if (_capabilityProbe.HasMatFP16)
@@ -1148,7 +1313,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
                 SafeRegisterPipeline("mat_int64_khr", VulkanShaders.GetShaderMatINT64(_capabilityProbe), isCoopMat: true);
         }
 
-        // 3. NVIDIA Cooperative Matrix 1 Pipelines (Subgroup Scope - VK_NV_cooperative_matrix)
+        // 4. NVIDIA Cooperative Matrix 1 Pipelines
         if (_capabilityProbe.HasCoopMatrixNV)
         {
             SafeRegisterPipeline("mat_fp16_nv1", VulkanNvMatrixShaders.GetShaderNV1_FP16(_capabilityProbe), isCoopMat: true);
@@ -1161,7 +1326,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
             SafeRegisterPipeline("mat_mod_nv1", VulkanNvMatrixShaders.GetShaderNV1_FP16(_capabilityProbe), isCoopMat: true);
         }
 
-        // 4. NVIDIA Cooperative Matrix 2 Pipelines (Workgroup Scope - VK_NV_cooperative_matrix2)
+        // 5. NVIDIA Cooperative Matrix 2 Pipelines
         if (_capabilityProbe.HasCoopMatrixNV2)
         {
             SafeRegisterPipeline("mat_fp16_nv2", VulkanNvMatrixShaders.GetShaderNV2_FP16(_capabilityProbe), isCoopMat: true);
@@ -1177,12 +1342,13 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
             SafeRegisterPipeline("mat_mod_nv2", VulkanNvMatrixShaders.GetShaderNV2_FP16(_capabilityProbe), isCoopMat: true);
         }
 
-        // 5. Cache Hierarchy & Memory Pipelines
+        // 6. Cache Hierarchy & Memory Pipelines
         SafeRegisterPipeline("mem_l1l2", VulkanShaders.GetShaderL2Cache());
         SafeRegisterPipeline("mem_l3",   VulkanShaders.GetShaderL3Cache());
         SafeRegisterPipeline("mem_bw",   VulkanShaders.GetShaderMem());
         SafeRegisterPipeline("mem_lat",  VulkanShaders.GetShaderLatency());
-        // 6. TMU Texture Stress Pipelines
+
+        // 7. TMU Texture Stress Pipelines
         SafeRegisterPipeline("tmu_bdt",   VulkanShaders.GetShaderTmuBilinear());
         if (_capabilityProbe.HasSamplerAnisotropy)
             SafeRegisterPipeline("tmu_aniso", VulkanShaders.GetShaderTmuAniso());
@@ -1214,6 +1380,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
             {
                 if (item.Id == "mem_l3" && !_capabilityProbe.HasL3InfinityCache) continue;
                 if (item.Id == "mem_l1l2" && _capabilityProbe.L2CacheSizeBytes == 0) continue;
+                if (item.Id is "rt_ser" or "rt_omm" or "rt_pos" or "mat_mod_nv1" or "mat_mod_nv2") continue;
                 activeList.Add(item.Id);
             }
         }
@@ -1287,6 +1454,14 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
         double totalInvocationsPerDispatch = wgCount * VulkanShaders.LocalSizeX;
         double operationsPerDispatch = opsPerInvocation * totalInvocationsPerDispatch;
         return (dispatchesPerSecond * operationsPerDispatch) / 1e12;
+    }
+
+    private double GetWorkloadMRays(string id, double dispatchesPerSecond)
+    {
+        if (!_workloads.TryGetValue(id, out var workload)) return 0.0;
+        double totalInvocations = _wgAluAndL1 * VulkanShaders.LocalSizeX;
+        double raysPerDispatch = workload.OpsPerInvocation * totalInvocations;
+        return (dispatchesPerSecond * raysPerDispatch) / 1e6;
     }
 
     private void Execute(CancellationToken hostCt)
@@ -1398,7 +1573,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
 
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
-        winOptions.Title = "GPU-T Vulkan Compute Benchmark";
+        winOptions.Title = "GPU-T Vulkan Compute & Hardware RT Benchmark";
         winOptions.API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 3));
         winOptions.VSync = true;
 
@@ -1507,6 +1682,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
                 }
             }
 
+            // ALU Metrics
             double fp32Tflops = _testRegistry.IsActive("alu_fp32") ? GetWorkloadTops("alu_fp32", GetDps("alu_fp32")) : 0.0;
             double fp16Tflops = _testRegistry.IsActive("alu_fp16") ? GetWorkloadTops("alu_fp16", GetDps("alu_fp16")) : 0.0;
             double bf16Tflops = _testRegistry.IsActive("alu_bf16") ? GetWorkloadTops("alu_bf16", GetDps("alu_bf16")) : 0.0;
@@ -1519,23 +1695,28 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
             double dp4aTops   = _testRegistry.IsActive("alu_dp4a")  ? GetWorkloadTops("alu_dp4a", GetDps("alu_dp4a")) : 0.0;
             double dp2aTops   = _testRegistry.IsActive("alu_dp2a")  ? GetWorkloadTops("alu_dp2a", GetDps("alu_dp2a")) : 0.0;
 
+            // Matrix Metrics
             double matFp16Tops = _testRegistry.IsActive("mat_fp16") ? GetWorkloadTops("mat_fp16", GetDps("mat_fp16")) : 0.0;
             double matBf16Tops = _testRegistry.IsActive("mat_bf16") ? GetWorkloadTops("mat_bf16", GetDps("mat_bf16")) : 0.0;
             double matInt8Tops = _testRegistry.IsActive("mat_int8") ? GetWorkloadTops("mat_int8", GetDps("mat_int8")) : 0.0;
 
-            // Accurate L1/L2 calculation: 64 threads * 544 bytes = 34,816 bytes per workgroup
+            // Hardware Ray Tracing Metrics (MRays/s)
+            double rtMRaysSec = 0.0;
+            if (_testRegistry.IsActive("rt_query")) rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_query", GetDps("rt_query")));
+            if (_testRegistry.IsActive("rt_pipe"))  rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_pipe", GetDps("rt_pipe")));
+            if (_testRegistry.IsActive("rt_nv"))    rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_nv", GetDps("rt_nv")));
+
+            // Memory Hierarchy Metrics
             const double l2BytesPerGroup = 64.0 * 544.0;
             double cacheL1L2Tbs = (_testRegistry.IsActive("mem_l1l2") && HasPipelineFor("mem_l1l2") && _capabilityProbe.L2CacheSizeBytes > 0)
                 ? (GetDps("mem_l1l2") * (_wgAluAndL1 * l2BytesPerGroup)) / 1_000_000_000_000.0
                 : 0.0;
 
-            // Accurate L3 calculation: 64 threads * 288 bytes = 18,432 bytes per workgroup
             const double l3BytesPerGroup = 64.0 * 288.0;
             double cacheL3Tbs = (_testRegistry.IsActive("mem_l3") && _capabilityProbe.HasL3InfinityCache && HasPipelineFor("mem_l3"))
                 ? (GetDps("mem_l3") * (_wgL3Cache * l3BytesPerGroup)) / 1_000_000_000_000.0
                 : 0.0;
 
-            // Accurate dynamic VRAM bus throughput: exactly _vramSweepSizeBytes bytes streamed per dispatch
             double memBandwidthGbs = (_testRegistry.IsActive("mem_bw") && HasPipelineFor("mem_bw"))
                 ? (GetDps("mem_bw") * (double)_vramSweepSizeBytes) / 1_000_000_000.0
                 : 0.0;
@@ -1545,6 +1726,7 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
                 ? (1_000_000_000.0 / (latDps * 4096.0))
                 : 0.0;
 
+            // TMU Texture Metrics
             double tmuGtexels = 0.0;
             if (_testRegistry.IsActive("tmu_bdt"))   tmuGtexels = Math.Max(tmuGtexels, (GetDps("tmu_bdt") * _wgAluAndL1 * 64.0 * VulkanShaders.TMU_SAMPLES_PER_INVOCATION) / 1e9);
             if (_testRegistry.IsActive("tmu_aniso")) tmuGtexels = Math.Max(tmuGtexels, (GetDps("tmu_aniso") * _wgAluAndL1 * 64.0 * VulkanShaders.TMU_SAMPLES_PER_INVOCATION * 16.0) / 1e9);
@@ -1557,12 +1739,12 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
             {
                 PixelUiEngine.Render(
                     pUi, WinWidth, WinHeight,
-                    "Vulkan 1.0 Compute", _deviceName, _isBenchmarking, _targetDurationSec,
+                    "Vulkan 1.0 Stress-test", _deviceName, _isBenchmarking, _targetDurationSec,
                     _customInputBuffer, _isCustomFocused, elapsed, totalActiveDps, 0.0, null, ThemePalette.Vulkan,
                     _mouseX, _mouseY, animTime, _isSettingsOpen, _testRegistry,
                     fp32Tflops, fp64Tflops, fp16Tflops, bf16Tflops, int32Tiops, int64Tiops, int16Tiops, int8Tiops,
                     dp2aTops, dp4aTops, tmuGtexels, memBandwidthGbs, cacheL1L2Tbs, cacheL3Tbs, latencyNs,
-                    matFp16Tops, matBf16Tops, matInt8Tops);
+                    matFp16Tops, matBf16Tops, matInt8Tops, rtMRaysSec);
 
                 gl.ActiveTexture(TextureUnit.Texture0);
                 gl.BindTexture(TextureTarget.Texture2D, uiTexture);
@@ -1679,6 +1861,9 @@ private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = fal
                 if (pipeEntry.Module.Handle != 0) _vk.DestroyShaderModule(_device, pipeEntry.Module, null);
             }
             _pipelines.Clear();
+
+            _rtManager?.Dispose();
+            _rtManager = null;
 
             if (_pipeLayout.Handle != 0) _vk.DestroyPipelineLayout(_device, _pipeLayout, null);
             if (_descPool.Handle != 0) _vk.DestroyDescriptorPool(_device, _descPool, null);

@@ -50,10 +50,15 @@
       <Profile>spirv_1_3</Profile>
     </SlangShader>
 
+    <!-- Ray Tracing workloads requiring SPIR-V 1.4 -->
+    <SlangShader Update="Native/Vulkan/Shaders/RayTracing/**/*.slang">
+      <Profile>spirv_1_4</Profile>
+    </SlangShader>
+
     <!-- Raw SPIR-V Assembly shaders -->
     <SpvasmShader Include="Native/Vulkan/Shaders/**/*.spvasm" />
 
-    <!-- GLSL compute shaders (NVIDIA Cooperative Matrix 1) -->
+    <!-- GLSL compute shaders (NVIDIA Cooperative Matrix 1 & Legacy Ray Tracing) -->
     <GlslShader Include="Native/Vulkan/Shaders/**/*.comp" />
   </ItemGroup>
 

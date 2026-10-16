@@ -58,7 +58,7 @@ public sealed class VulkanTestRegistry
         Items.Add(new("alu_int16", "INT16 Short Math",  "ALU (INT)", probe.HasInt16, "GIOPS"));
         Items.Add(new("alu_int8",  "INT8 Byte Math",    "ALU (INT)", probe.HasInt8, "GIOPS"));
         Items.Add(new("alu_dp4a",  "INT8 DP4A DotProd", "ALU (INT)", probe.HasIntegerDotProduct, "TOPS"));
-        Items.Add(new("alu_dp2a", "DP2A (INT16)", "ALU (INT)", probe.HasDotProduct16Bit, "TIOPS"));
+        Items.Add(new("alu_dp2a",  "DP2A (INT16)",      "ALU (INT)", probe.HasDotProduct16Bit, "TIOPS"));
 
         // 3. VRAM & CACHES
         Items.Add(new("mem_bw",   "VRAM Stream BW",    "VRAM & CACHES", true, "GB/s"));
@@ -80,15 +80,15 @@ public sealed class VulkanTestRegistry
         Items.Add(new("mat_int64",    "Matrix INT64/U64",   "MATRIX TYPES", probe.HasMatINT64, "TOPS"));
 
         // 5. MATRIX MODIFIERS
-Items.Add(new("mat_mod_nv2",  "NV CoopMat 2 (Tensor)", "MATRIX MODS", probe.HasCoopMatrixNV2, "MODE"));
-Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasCoopMatrixNV, "MODE"));
+        Items.Add(new("mat_mod_nv2",  "NV CoopMat 2 (Tensor)", "MATRIX MODS", probe.HasCoopMatrixNV2, "MODE"));
+        Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasCoopMatrixNV, "MODE"));
 
-        // 6. RAY TRACING
+        // 6. RAY TRACING (Standard KHR & Modifiers & Legacy NV)
         Items.Add(new("rt_query", "Ray Query (Inline)", "RAY TRACING", probe.HasRayQuery, "MRays/s"));
         Items.Add(new("rt_pipe",  "RT Pipeline (HW)",   "RAY TRACING", probe.HasRTPipeline, "MRays/s"));
-        Items.Add(new("rt_ser",   "SER Reordering",     "RAY TRACING", probe.HasSER, "MRays/s"));
-        Items.Add(new("rt_omm",   "OMM Opacity Map",    "RAY TRACING", probe.HasOMM, "MRays/s"));
-        Items.Add(new("rt_pos",   "RT Position Fetch",  "RAY TRACING", probe.HasRTPositionFetch, "MRays/s"));
+        Items.Add(new("rt_ser",   "SER Reordering",     "RAY TRACING", probe.HasSER, "MODE"));
+        Items.Add(new("rt_omm",   "OMM Opacity Map",    "RAY TRACING", probe.HasOMM, "MODE"));
+        Items.Add(new("rt_pos",   "RT Position Fetch",  "RAY TRACING", probe.HasRTPositionFetch, "MODE"));
         Items.Add(new("rt_nv",    "Legacy NV_RT (2018)","RAY TRACING", probe.HasNVRayTracing, "MRays/s"));
 
         // 7. VULKAN VIDEO
@@ -154,6 +154,62 @@ Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasC
         return count;
     }
 
+    /// <summary>
+    /// Resolves mutual exclusivity across NV1 Matrix and Ray Tracing extensions.
+    /// Ensures SER only runs with RT Pipeline, OMM/PosFetch run with Query or Pipeline,
+    /// and Legacy NV_RT is exclusive with modern KHR RT workloads.
+    /// </summary>
+    public void SanitizeAllConflicts()
+    {
+        // 1. Matrix NV1 Conflicts
+        bool isNv1Active = IsActive("mat_mod_nv1");
+        if (isNv1Active)
+        {
+            for (int k = 0; k < Items.Count; k++)
+            {
+                var other = Items[k];
+                if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64")
+                {
+                    other.IsChecked = false;
+                }
+            }
+        }
+
+        // 2. Ray Tracing Conflicts
+        bool isRtNvActive = Items.Any(i => i.Id == "rt_nv" && i.IsChecked);
+        bool hasKhrRtChecked = Items.Any(i => i.Id is "rt_query" or "rt_pipe" or "rt_ser" or "rt_omm" or "rt_pos" && i.IsChecked);
+
+        if (isRtNvActive)
+        {
+            for (int k = 0; k < Items.Count; k++)
+            {
+                if (Items[k].Id is "rt_query" or "rt_pipe" or "rt_ser" or "rt_omm" or "rt_pos")
+                    Items[k].IsChecked = false;
+            }
+        }
+        else
+        {
+            bool hasPipe = Items.Any(i => i.Id == "rt_pipe" && i.IsChecked);
+            bool hasBase = hasPipe || Items.Any(i => i.Id == "rt_query" && i.IsChecked);
+
+            // SER is compatible only with RT Pipeline
+            if (!hasPipe)
+            {
+                var ser = Items.FirstOrDefault(i => i.Id == "rt_ser");
+                if (ser != null) ser.IsChecked = false;
+            }
+
+            // OMM and PosFetch require either Ray Query or RT Pipeline
+            if (!hasBase)
+            {
+                var omm = Items.FirstOrDefault(i => i.Id == "rt_omm");
+                if (omm != null) omm.IsChecked = false;
+                var pos = Items.FirstOrDefault(i => i.Id == "rt_pos");
+                if (pos != null) pos.IsChecked = false;
+            }
+        }
+    }
+
     public void ApplyPreset(StressPreset preset)
     {
         foreach (var item in Items)
@@ -168,13 +224,15 @@ Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasC
             {
                 StressPreset.DefaultFP32 => item.Id == "alu_fp32",
                 StressPreset.Gaming => (item.Category.Contains("ALU") || item.Category.Contains("ROP") || item.Category.Contains("TMU") || item.Category.Contains("VRAM")) && !item.Id.Contains("64") && !item.Id.Contains("32f") && !item.Id.Contains("mrt8"),
-                StressPreset.GamingRayTracing => item.Category.Contains("RAY TRACING") || item.Category.Contains("ALU") || item.Category.Contains("ROP") || item.Category.Contains("TMU") || item.Category.Contains("VRAM"),
+                StressPreset.GamingRayTracing => item.Id is "rt_query" or "rt_pipe" or "rt_ser" or "rt_omm" or "rt_pos" || item.Category.Contains("ALU") || item.Category.Contains("ROP") || item.Category.Contains("TMU") || item.Category.Contains("VRAM"),
                 StressPreset.MatrixAI => item.Category.Contains("MATRIX") || item.Id == "alu_dp4a" || item.Id == "alu_dp2a" || item.Id == "alu_fp16" || item.Id == "alu_bf16",
                 StressPreset.MemoryCache => item.Category == "VRAM & CACHES" || item.Id.Contains("mrt"),
                 StressPreset.VideoEngine => item.Category == "VULKAN VIDEO",
-                StressPreset.FullSiliconBurn => true,
+                StressPreset.FullSiliconBurn => item.Id != "rt_nv" && item.Id != "mat_mod_nv1",
                 _ => item.IsChecked
             };
         }
+
+        SanitizeAllConflicts();
     }
 }

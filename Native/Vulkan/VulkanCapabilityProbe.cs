@@ -59,22 +59,6 @@ public sealed unsafe class VulkanCapabilityProbe
         public uint shaderFloat8CooperativeMatrix;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct VkCooperativeMatrixPropertiesKHR
-    {
-        public StructureType sType;
-        public void* pNext;
-        public uint MSize;
-        public uint NSize;
-        public uint KSize;
-        public ComponentTypeKHR AType;
-        public ComponentTypeKHR BType;
-        public ComponentTypeKHR CType;
-        public ComponentTypeKHR ResultType;
-        public Silk.NET.Core.Bool32 saturatingAccumulation;
-        public ScopeKHR scope;
-    }
-
     private readonly record struct CacheRule(string Pattern, uint L2Kb, uint L3Kb);
 
     private static readonly string[] SoftwareRenderers = ["LLVMPIPE", "LAVAPIPE", "SWIFTSHADER", "VK-GL-CTS"];
@@ -174,7 +158,6 @@ public sealed unsafe class VulkanCapabilityProbe
     public bool HasInt16 { get; private set; }
     public bool HasInt64 { get; private set; }
     public bool HasIntegerDotProduct { get; private set; }
-
     public bool HasDotProduct16Bit { get; private set; }
 
     public bool HasSamplerAnisotropy { get; private set; }
@@ -204,6 +187,8 @@ public sealed unsafe class VulkanCapabilityProbe
     public bool HasMatINT32 { get; private set; }
     public bool HasMatINT64 { get; private set; }
 
+    // Ray Tracing Capabilities
+    public bool HasAccelerationStructure { get; private set; }
     public bool HasRayQuery { get; private set; }
     public bool HasRTPipeline { get; private set; }
     public bool HasSER { get; private set; }
@@ -337,7 +322,6 @@ public sealed unsafe class VulkanCapabilityProbe
             };
 
             vk.GetPhysicalDeviceProperties2(physicalDevice, &props2);
-
             HasDotProduct16Bit = dotProps.IntegerDotProduct16BitSignedAccelerated.Value != 0;
         }
         else
@@ -351,16 +335,18 @@ public sealed unsafe class VulkanCapabilityProbe
         HasCoopMatrixKHR = _supportedExtensions.Contains("VK_KHR_cooperative_matrix");
         HasCoopMatrixNV = _supportedExtensions.Contains("VK_NV_cooperative_matrix");
         HasCoopMatrixNV2 = _supportedExtensions.Contains("VK_NV_cooperative_matrix2");
-
         HasIntelInt4 = (VendorId == 0x8086) && HasCoopMatrixKHR;
 
+        // Probing Acceleration Structure and Ray Tracing
+        HasAccelerationStructure = _supportedExtensions.Contains("VK_KHR_acceleration_structure");
         HasRayQuery = _supportedExtensions.Contains("VK_KHR_ray_query");
         HasRTPipeline = _supportedExtensions.Contains("VK_KHR_ray_tracing_pipeline");
         HasSER = _supportedExtensions.Contains("VK_KHR_ray_tracing_invocation_reorder") || _supportedExtensions.Contains("VK_NV_ray_tracing_invocation_reorder");
-        HasOMM = _supportedExtensions.Contains("VK_KHR_opacity_micromap");
+        HasOMM = _supportedExtensions.Contains("VK_EXT_opacity_micromap") || _supportedExtensions.Contains("VK_KHR_opacity_micromap");
         HasRTPositionFetch = _supportedExtensions.Contains("VK_KHR_ray_tracing_position_fetch");
         HasNVRayTracing = _supportedExtensions.Contains("VK_NV_ray_tracing");
 
+        // Vulkan Video
         HasVideoDecodeH264 = _supportedExtensions.Contains("VK_KHR_video_decode_h264");
         HasVideoDecodeH265 = _supportedExtensions.Contains("VK_KHR_video_decode_h265");
         HasVideoDecodeAV1 = _supportedExtensions.Contains("VK_KHR_video_decode_av1");
@@ -380,7 +366,6 @@ public sealed unsafe class VulkanCapabilityProbe
         HasSamplerAnisotropy = features.SamplerAnisotropy;
         HasTextureCompressionBC = features.TextureCompressionBC;
 
-        // Query Float16 and Int8 hardware execution
         if (_supportedExtensions.Contains("VK_KHR_shader_float16_int8"))
         {
             VkPhysicalDeviceShaderFloat16Int8FeaturesKHR f16i8Feat = default;
@@ -391,18 +376,10 @@ public sealed unsafe class VulkanCapabilityProbe
             feat2.PNext = &f16i8Feat;
 
             vk.GetPhysicalDeviceFeatures2(physicalDevice, &feat2);
-
             HasFloat16 = f16i8Feat.shaderFloat16 == 1u;
             HasInt8 = f16i8Feat.shaderInt8 == 1u;
         }
-        else
-        {
-            HasFloat16 = false;
-            HasInt8 = false;
-        }
 
-        // Query BFloat16 hardware capabilities
-        // RADV returns shaderBFloat16DotProduct == 0 even with RADV_EXPERIMENTAL=bfloat16
         if (HasBFloat16Extension)
         {
             VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16Feat = default;
@@ -413,19 +390,11 @@ public sealed unsafe class VulkanCapabilityProbe
             feat2.PNext = &bf16Feat;
 
             vk.GetPhysicalDeviceFeatures2(physicalDevice, &feat2);
-
             HasShaderBFloat16 = bf16Feat.shaderBFloat16Type == 1u;
             HasBFloat16DotProduct = bf16Feat.shaderBFloat16DotProduct == 1u;
             HasShaderBFloat16CooperativeMatrix = bf16Feat.shaderBFloat16CooperativeMatrix == 1u;
         }
-        else
-        {
-            HasShaderBFloat16 = false;
-            HasBFloat16DotProduct = false;
-            HasShaderBFloat16CooperativeMatrix = false;
-        }
 
-        // Query Float8 hardware capabilities
         if (HasFloat8)
         {
             VkPhysicalDeviceShaderFloat8FeaturesEXT fp8Feat = default;
@@ -436,7 +405,6 @@ public sealed unsafe class VulkanCapabilityProbe
             feat2.PNext = &fp8Feat;
 
             vk.GetPhysicalDeviceFeatures2(physicalDevice, &feat2);
-
             HasFloat8 = fp8Feat.shaderFloat8 == 1u;
             if (fp8Feat.shaderFloat8CooperativeMatrix == 0u)
             {
@@ -510,7 +478,6 @@ public sealed unsafe class VulkanCapabilityProbe
             catch { }
         }
 
-        // Fallback profile if cooperative matrix query is unavailable
         if (HasCoopMatrixKHR || HasCoopMatrixNV)
         {
             HasMatFP16 = HasFloat16;
@@ -569,8 +536,8 @@ public sealed unsafe class VulkanCapabilityProbe
                 uint val = (uint)type;
                 if (val == 1000141000 || val == 1000141001)
                 {
-                HasMatBF16 = true;
-                key = "BF16";
+                    HasMatBF16 = true;
+                    key = "BF16";
                 }
                 else if (val == 1000491002)
                 {
@@ -591,7 +558,7 @@ public sealed unsafe class VulkanCapabilityProbe
         }
     }
 
-private void ApplyMockProfile(MockGpuTarget target)
+    private void ApplyMockProfile(MockGpuTarget target)
     {
         HasFloat64 = true; HasInt64 = true; HasInt16 = true;
         HasSamplerAnisotropy = true; HasTextureCompressionBC = true;
@@ -609,7 +576,16 @@ private void ApplyMockProfile(MockGpuTarget target)
             HasCoopMatrixKHR = true; HasCoopMatrixNV = true; HasCoopMatrixNV2 = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
             HasMatFP8_E4M3 = true; HasMatFP8_E5M2 = true;
-            HasRayQuery = true; HasRTPipeline = true; HasSER = true; HasOMM = true; HasRTPositionFetch = true;
+
+            // Full Ray Tracing suite
+            HasAccelerationStructure = true;
+            HasRayQuery = true;
+            HasRTPipeline = true;
+            HasSER = true;
+            HasOMM = true;
+            HasRTPositionFetch = true;
+            HasNVRayTracing = false;
+
             HasVideoDecodeAV1 = true; HasVideoEncodeAV1 = true;
 
             _coopMatDimensions["FP16"] = (16, 16, 16);
@@ -629,7 +605,16 @@ private void ApplyMockProfile(MockGpuTarget target)
             HasShaderBFloat16CooperativeMatrix = true;
             HasCoopMatrixKHR = true; HasIntelInt4 = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
-            HasRayQuery = true; HasRTPipeline = true; HasVideoDecodeVP9 = true; HasVideoEncodeAV1 = true;
+
+            HasAccelerationStructure = true;
+            HasRayQuery = true;
+            HasRTPipeline = true;
+            HasSER = false;
+            HasOMM = false;
+            HasRTPositionFetch = false;
+            HasNVRayTracing = false;
+
+            HasVideoDecodeVP9 = true; HasVideoEncodeAV1 = true;
 
             _coopMatDimensions["FP16"] = (8, 8, 16);
             _coopMatDimensions["BF16"] = (8, 8, 16);
@@ -643,11 +628,19 @@ private void ApplyMockProfile(MockGpuTarget target)
             L2CacheSizeBytes = 6 * 1024 * 1024; L3CacheSizeBytes = 64 * 1024 * 1024;
             HasFloat16 = true; HasInt8 = true; HasIntegerDotProduct = true;
             HasBFloat16Extension = true; HasShaderBFloat16 = true;
-            HasBFloat16DotProduct = false; // Physically absent on RDNA 3 / RADV
+            HasBFloat16DotProduct = false;
             HasShaderBFloat16CooperativeMatrix = true;
             HasCoopMatrixKHR = true;
             HasMatFP16 = true; HasMatBF16 = true; HasMatINT8 = true;
-            HasRayQuery = true; HasRTPipeline = true;
+
+            HasAccelerationStructure = true;
+            HasRayQuery = true;
+            HasRTPipeline = true;
+            HasSER = false;
+            HasOMM = false;
+            HasRTPositionFetch = true;
+            HasNVRayTracing = false;
+
             HasVideoDecodeAV1 = true; HasVideoEncodeAV1 = true;
             SubgroupSize = 32;
 
@@ -655,15 +648,28 @@ private void ApplyMockProfile(MockGpuTarget target)
             _coopMatDimensions["BF16"] = (16, 16, 16);
             _coopMatDimensions["INT8"] = (16, 16, 16);
         }
+        else if (target == MockGpuTarget.LegacyPascal)
+        {
+            VendorId = 0x10DE; DeviceName = "NVIDIA GeForce GTX 1080 (Mock)";
+            DeviceType = PhysicalDeviceType.DiscreteGpu;
+            L2CacheSizeBytes = 2048 * 1024; L3CacheSizeBytes = 0;
+            HasFloat16 = false; HasInt8 = false; HasIntegerDotProduct = false;
+            HasCoopMatrixKHR = false; HasCoopMatrixNV = false; HasCoopMatrixNV2 = false;
+
+            // Pascal only has legacy NV_ray_tracing (2018 emulation)
+            HasAccelerationStructure = false;
+            HasRayQuery = false;
+            HasRTPipeline = false;
+            HasSER = false;
+            HasOMM = false;
+            HasRTPositionFetch = false;
+            HasNVRayTracing = true;
+        }
     }
 
     /// <summary>
-    /// Dynamically computes matrix operations per invocation from physical hardware tile dimensions (M, N, K)
-    /// queried via vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR.
-    /// Hardware-agnostic across AMD (RDNA 3/4), NVIDIA (Tensor Cores), and Intel (XMX).
+    /// Dynamically computes matrix operations per invocation from physical hardware tile dimensions (M, N, K).
     /// </summary>
-    /// <param name="testId">Unique workload identifier.</param>
-    /// <returns>Calculated hardware operations per invocation.</returns>
     public double GetMatrixOpsPerInvocation(string testId)
     {
         string typeKey = testId switch

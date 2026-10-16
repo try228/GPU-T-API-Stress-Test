@@ -4,7 +4,7 @@ namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
 /// Hardware compute shader provider loading precompiled SPIR-V 1.0 (ALU, cache, TMU, VRAM)
-/// and SPIR-V 1.3 (cooperative matrix) modules embedded into the executable assembly.
+/// and SPIR-V 1.4 (Ray Tracing and Cooperative Matrix) modules.
 /// </summary>
 public static class VulkanShaders
 {
@@ -27,7 +27,10 @@ public static class VulkanShaders
     // TMU Texture units
     public const double TMU_SAMPLES_PER_INVOCATION = 256.0;
 
-    // Fallback constants for Matrix workloads
+    // 32 hardware rays per invocation * 327,680 invocations = 10.48 million real BVH rays per dispatch
+public const double RT_RAYS_PER_INVOCATION = 32.0;
+
+    // Matrix workloads
     public const double MAT_FP32_OPS_PER_INVOCATION = 4096.0;
     public const double MAT_FP64_OPS_PER_INVOCATION = 1024.0;
     public const double MAT_FP16_OPS_PER_INVOCATION = 4096.0;
@@ -51,19 +54,20 @@ public static class VulkanShaders
     private static uint[]? _spvMemL2, _spvMemL3, _spvMemVram, _spvPointerChase;
     private static uint[]? _spvTmuBdt, _spvTmuAniso, _spvTmuBc, _spvTmu3D;
 
+    // Ray Tracing Bytecode
+    private static uint[]? _spvRtQuery, _spvRtQueryOmm, _spvRtQueryPos;
+    private static uint[]? _spvRtPipe, _spvRtPipeSer, _spvRtPipeOmm, _spvRtPipePos;
+    private static uint[]? _spvRtNv;
+
     /// <summary>
     /// Loads aligned 32-bit SPIR-V binary words embedded into the assembly manifest or from build output.
-    /// Guarantees fail-safe loading with descriptive diagnostics.
     /// </summary>
-    /// <param name="shaderFileName">Base filename of the shader without extension (e.g. "alu_fp32").</param>
-    /// <returns>An array of 32-bit unsigned integer words representing the SPIR-V module.</returns>
-    /// <exception cref="InvalidOperationException">Thrown when the shader binary cannot be located.</exception>
     public static uint[] LoadSpirv(string shaderFileName)
     {
         var assembly = typeof(VulkanShaders).Assembly;
         string resourceName = $"Shaders.{shaderFileName}.spv";
 
-        // 1. Primary: load from embedded assembly resources
+        // 1. Embedded assembly resources
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream != null)
         {
@@ -95,10 +99,8 @@ public static class VulkanShaders
             return words;
         }
 
-        // 3. Diagnostics
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine($"[Shader Error] Failed to locate '{resourceName}'!");
-        Console.WriteLine($"Available embedded resources: [{string.Join(", ", assembly.GetManifestResourceNames())}]");
         Console.ResetColor();
 
         throw new InvalidOperationException($"SPIR-V module '{resourceName}' was neither embedded nor found on disk.");
@@ -147,8 +149,20 @@ public static class VulkanShaders
     public static uint[]? GetShaderMatFP8_E4M3(VulkanCapabilityProbe? probe = null)=> _spvMatFp8E4M3 ??= LoadSpirv("mat_khr_fp8_e4m3");
     public static uint[]? GetShaderMatFP8_E5M2(VulkanCapabilityProbe? probe = null)=> _spvMatFp8E5M2 ??= LoadSpirv("mat_khr_fp8_e5m2");
     public static uint[]? GetShaderMatINT8(VulkanCapabilityProbe? probe = null)    => _spvMatInt8    ??= LoadSpirv("mat_khr_int8");
-    public static uint[]? GetShaderMatINT4(VulkanCapabilityProbe? probe = null) => _spvMatInt4 ??= LoadSpirv("mat_khr_int4");
+    public static uint[]? GetShaderMatINT4(VulkanCapabilityProbe? probe = null)    => _spvMatInt4    ??= LoadSpirv("mat_khr_int4");
     public static uint[]? GetShaderMatINT16(VulkanCapabilityProbe? probe = null)   => _spvMatInt16   ??= LoadSpirv("mat_khr_int16");
     public static uint[]? GetShaderMatINT32(VulkanCapabilityProbe? probe = null)   => _spvMatInt32   ??= LoadSpirv("mat_khr_int32");
     public static uint[]? GetShaderMatINT64(VulkanCapabilityProbe? probe = null)   => _spvMatInt64   ??= LoadSpirv("mat_khr_int64");
+
+    // Ray Tracing Shaders (SPIR-V 1.4 / Extension-Accelerated)
+    public static uint[]? GetShaderRtQuery(VulkanCapabilityProbe? probe = null)    => _spvRtQuery    ??= LoadSpirv("rt_query");
+    public static uint[]? GetShaderRtQueryOmm(VulkanCapabilityProbe? probe = null) => _spvRtQueryOmm ??= LoadSpirv("rt_query_omm");
+    public static uint[]? GetShaderRtQueryPos(VulkanCapabilityProbe? probe = null) => _spvRtQueryPos ??= LoadSpirv("rt_query_pos");
+
+    public static uint[]? GetShaderRtPipe(VulkanCapabilityProbe? probe = null)     => _spvRtPipe     ??= LoadSpirv("rt_pipe");
+    public static uint[]? GetShaderRtPipeSer(VulkanCapabilityProbe? probe = null)  => _spvRtPipeSer  ??= LoadSpirv("rt_pipe_ser");
+    public static uint[]? GetShaderRtPipeOmm(VulkanCapabilityProbe? probe = null)  => _spvRtPipeOmm  ??= LoadSpirv("rt_pipe_omm");
+    public static uint[]? GetShaderRtPipePos(VulkanCapabilityProbe? probe = null)  => _spvRtPipePos  ??= LoadSpirv("rt_pipe_pos");
+
+    public static uint[]? GetShaderRtNv(VulkanCapabilityProbe? probe = null)        => _spvRtNv       ??= LoadSpirv("rt_nv");
 }
