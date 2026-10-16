@@ -8,16 +8,18 @@ Standalone Native AOT GPU benchmark and compute/graphics stress test for **GPU-T
 
 ### 1. Build Tools & Runtime
 * **.NET 10.0 SDK** (or later)
-* **Native AOT toolchain**:
-  * **Ubuntu / Debian**: `sudo apt install -y build-essential clang zlib1g-dev libgl1-mesa-dev libvulkan-dev glslang-tools`
-  * **Arch Linux**: `sudo pacman -S base-devel clang zlib mesa vulkan-icd-loader glslang`
-  * **Fedora**: `sudo dnf install -y clang gcc zlib-devel mesa-libGL-devel vulkan-loader-devel glslang`
-* **Shader Compilers**:
-  * **Slang Compiler (`slangc`)**: Must be installed and available in `$PATH`. Used by the runtime to compile compute, memory, and modern Khronos/NV2 cooperative matrix shaders into SPIR-V.
-  * **GLSL Validator (`glslangValidator`)**: Must be installed and available in `$PATH`. Used by the runtime to compile legacy NVIDIA Cooperative Matrix 1 (`GL_NV_cooperative_matrix`) shaders into native SPIR-V 1.0.
+* **Native AOT toolchain & system libraries**:
+  * **Ubuntu / Debian**: `sudo apt install -y build-essential clang zlib1g-dev libgl1-mesa-dev libvulkan-dev glslang-tools spirv-tools`
+  * **Arch Linux**: `sudo pacman -S base-devel clang zlib mesa vulkan-icd-loader glslang spirv-tools`
+  * **Fedora**: `sudo dnf install -y clang gcc zlib-devel mesa-libGL-devel vulkan-loader-devel glslang spirv-tools`
+* **Shader Compilers & Assemblers**:
+  * **Slang Compiler (`slangc`)**: Must be installed and available in `$PATH`. Compiles compute, memory, modern Khronos/NV2 cooperative matrix, and Hardware Ray Tracing shaders into SPIR-V (profiles `spirv_1_0`, `spirv_1_3`, and `spirv_1_4`).
+  * **GLSL Validator (`glslangValidator`)**: Must be installed and available in `$PATH`. Compiles legacy NVIDIA Cooperative Matrix 1 (`GL_NV_cooperative_matrix`) and Legacy Ray Tracing (`rt_nv.comp`) compute shaders into native SPIR-V.
+  * **SPIR-V Assembler (`spirv-as`)**: Must be installed and available in `$PATH` (provided by `spirv-tools`). Used by the build target to assemble raw SPIR-V 1.3 assembly shaders (`.spvasm`) for specialized matrix/tensor instructions.
 
 ### 2. Runtime Drivers & Optional Tools
 * **Vulkan 1.0+** capable driver and loader (`vulkan-tools`, Mesa / NVIDIA / Intel compute drivers). Requires instance extension `VK_KHR_get_physical_device_properties2`.
+* **Hardware Ray Tracing** requires driver support for `VK_KHR_acceleration_structure`, `VK_KHR_buffer_device_address`, and `VK_KHR_ray_query` / `VK_KHR_ray_tracing_pipeline`.
 * **Wine / Proton** (required only for Windows Direct3D backends via DXVK / VKD3D).
 * **Vulkan Validation Layers** (`vulkan-validation-layers`), optional, for `--debug`.
 
@@ -42,6 +44,8 @@ dotnet publish Payloads/D3DPayload \
 dotnet publish -c Release -r linux-x64
 ```
 
+The build pipeline automatically invokes `slangc`, `glslangValidator`, and `spirv-as` to compile all shaders into SPIR-V binaries and embed them directly into the output executable.
+
 The resulting binary will be located at:
 `./bin/Release/net10.0/linux-x64/publish/GPU-T.StressTest`
 
@@ -60,7 +64,7 @@ The resulting binary will be located at:
 | `-b, --backend <api>`           | Target backend API. Default: `gl`.                                                                   |
 | `-g, --gpu <index\|name>`       | Target GPU by numeric index (`0`, `1`) or vendor/device substring (`amd`, `intel`, `nvidia`).        |
 | `-d, --duration <sec>`          | Test duration in seconds (`0` for unlimited). Default: `0`.                                          |
-| `-m, --mock-gpu <target>`       | Override hardware detection profile: `nvidia` (RTX 5090), `intel` (Arc B580), `rdna3` (RX 7900 GRE), `pascal`. |
+| `-m, --mock-gpu <target>`       | Override hardware detection profile: `nvidia` (RTX 5090), `intel` (Arc B580), `rdna3` (RX 7900 GRE), `pascal` (GTX 1080). |
 | `--debug`, `-dbg`, `--vk-debug` | Enable Vulkan debug messenger (`VK_EXT_debug_utils`) with colorized console output.                  |
 | `--list-gpus`                   | List detected GPUs and PCI IDs, then exit.                                                           |
 | `-h, --help`                    | Show help and exit.                                                                                  |
@@ -83,7 +87,7 @@ The resulting binary will be located at:
 | -------------------- | ----------------------------------------------------- |
 | `gl`, `opengl`       | Desktop OpenGL 3.3 Core (**Default**)                 |
 | `gles`, `opengles`   | OpenGL ES 3.0                                         |
-| `vk`, `vulkan`       | Vulkan 1.0 Compute & Matrix Stress Pipeline           |
+| `vk`, `vulkan`       | Vulkan 1.0 Compute, Matrix & Hardware RT Pipeline     |
 | `zink`               | OpenGL over Vulkan (Mesa Zink)                        |
 | `zink_es`            | OpenGL ES over Vulkan (Mesa Zink)                     |
 | `cl`, `opencl`       | OpenCL 1.2+ Compute                                   |
@@ -115,6 +119,17 @@ The Vulkan backend (`vk`) runs a software-rasterized telemetry HUD and multiple 
   * Uses a priority scoring engine preferring dedicated **Discrete GPUs** over **Integrated GPUs**.
   * Strictly rejects software emulation layers (`VK_PHYSICAL_DEVICE_TYPE_CPU`, Lavapipe, LLVMpipe, SwiftShader) and paravirtualized guest adapters (`VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU`, Virgl, Venus) to avoid driver segmentation faults and IPC virtualization latency skew.
 * **Multiplexed Dispatch:** Active workloads run via round-robin submission bursts. Compute kernels do not overlap directly with memory tests, preventing ALU load from skewing cache or bus throughput numbers.
+* **Hardware Ray Tracing (BVH & Silicon Accelerators):**
+  * **On-GPU Acceleration Structure Builder:** Dynamically allocates device-addressable memory (`ShaderDeviceAddressBit`) and constructs real two-level acceleration structures (multi-triangle BLAS + instanced TLAS) using `VK_KHR_acceleration_structure` and `VK_KHR_buffer_device_address`.
+  * **True Silicon Execution:** Targets SPIR-V 1.4 instructions (`OpRayQueryInitializeKHR`, `OpRayQueryProceedKHR`) binding directly to `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR` (Binding 7). Triggers physical silicon traversal units (AMD RDNA 2/3 Ray Accelerators via `IMAGE_BVH64`, NVIDIA RT Cores, Intel Xe-HPG/Xe2 RTUs) rather than software ALU fallbacks.
+  * **Microbenchmark Peak Throughput:** Operates on an in-cache BVH footprint (100% L0/L1 cache hit rate, zero VRAM latency stalls) to measure the raw **Peak Silicon Traversal Rate**.
+  * **Workloads & Modifiers:**
+    * **Ray Query (Inline):** Direct inline compute BVH traversal measuring raw hardware intersection rates.
+    * **RT Pipeline (HW):** Simulates multi-stage ray dispatch (primary ray intersection + secondary shadow rays).
+    * **SER Reordering (`rt_ser`):** Tests Shader Execution Reordering (`VK_KHR_ray_tracing_invocation_reorder` / `VK_NV_ray_tracing_invocation_reorder`) with spatial Morton-code binning across wavefronts/warps. *Strictly requires RT Pipeline.*
+    * **OMM Opacity Micromaps (`rt_omm`):** Evaluates 2-state micro-triangle opacity bitmasks directly during traversal (`VK_EXT_opacity_micromap`). *Compatible with Ray Query and RT Pipeline.*
+    * **RT Position Fetch (`rt_pos`):** Tests hardware position fetch (`VK_KHR_ray_tracing_position_fetch`) vertex reconstruction and secondary bounce reflections. *Compatible with Ray Query and RT Pipeline.*
+    * **Legacy NV_RT (`rt_nv`):** Turing/Pascal compute path for 2018 emulation drivers. *Strictly mutually exclusive with modern KHR ray tracing.*
 * **ALU Workloads:**
   * **FP32:** Vectorized FMA kernel (4096 FLOPs/thread).
   * **FP16 / BF16:** Packed 16-bit math (8192 / 4096 FLOPs/thread).
@@ -146,13 +161,13 @@ VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ./GPU-T.StressTest -b vk --debug
 
 ### Mock Profiles
 
-Use `--mock-gpu` to test device probing and UI layout without specific physical hardware:
+Use `--mock-gpu` to test device probing, UI layout, and RT matrix locking without specific physical hardware:
 
 ```bash
-./GPU-T.StressTest -b vk -m nvidia   # RTX 5090 Blackwell profile (128 MB L2)
-./GPU-T.StressTest -b vk -m rdna3    # RX 7900 GRE RDNA 3 profile (Infinity Cache)
-./GPU-T.StressTest -b vk -m intel    # Arc B580 Battlemage profile (Intel XMX / Int4)
-./GPU-T.StressTest -b vk -m pascal   # GTX 1080 Legacy Pascal profile (2 MB L2, No L3, No Tensor)
+./GPU-T.StressTest -b vk -m nvidia   # RTX 5090 Blackwell profile (128 MB L2, SER, OMM, PosFetch, Full Tensor)
+./GPU-T.StressTest -b vk -m rdna3    # RX 7900 GRE RDNA 3 profile (Infinity Cache, Ray Query, PosFetch, WMMA)
+./GPU-T.StressTest -b vk -m intel    # Arc B580 Battlemage profile (Intel XMX / Int4, Hardware RT)
+./GPU-T.StressTest -b vk -m pascal   # GTX 1080 Legacy Pascal profile (2 MB L2, No L3, Legacy NV_RT 2018)
 ```
 
 ### Multi-GPU Selection Limitations
