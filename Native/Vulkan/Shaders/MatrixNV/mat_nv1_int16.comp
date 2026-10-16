@@ -1,0 +1,33 @@
+#version 450 core
+#extension GL_NV_cooperative_matrix : enable
+#extension GL_NV_integer_cooperative_matrix : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_KHR_memory_scope_semantics : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer BufferA { int16_t a[]; };
+layout(set = 0, binding = 1) buffer BufferB { int16_t b[]; };
+layout(set = 0, binding = 2) buffer BufferC { int16_t c[]; };
+
+void main()
+{
+    uint sgIdx = gl_GlobalInvocationID.x / gl_SubgroupSize;
+    uint outOffset = (sgIdx * 16u * 16u) & 0x0001FFFFu;
+
+    icoopmatNV<16, gl_ScopeSubgroup, 16, 16> matA;
+    icoopmatNV<16, gl_ScopeSubgroup, 16, 16> matB;
+    icoopmatNV<16, gl_ScopeSubgroup, 16, 16> acc;
+
+    coopMatLoadNV(matA, a, 0u, 16u, false);
+    coopMatLoadNV(matB, b, 0u, 16u, false);
+    acc = icoopmatNV<16, gl_ScopeSubgroup, 16, 16>(int16_t(0));
+
+    for (int i = 0; i < 16; i++)
+    {
+        acc = coopMatMulAddNV(matA, matB, acc);
+    }
+
+    coopMatStoreNV(acc, c, outOffset, 16u, false);
+}

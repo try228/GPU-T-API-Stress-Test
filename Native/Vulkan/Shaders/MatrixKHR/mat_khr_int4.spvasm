@@ -1,0 +1,139 @@
+; SPIR-V
+; Version: 1.3
+; Generator: Khronos SPIR-V Tools Assembler; 0
+; Schema: 0
+               OpCapability Shader
+               OpCapability CooperativeMatrixKHR
+               OpCapability Int4TypeINTEL
+               OpCapability Int4CooperativeMatrixINTEL
+               OpExtension "SPV_KHR_cooperative_matrix"
+               OpExtension "SPV_INTEL_int4"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID %gl_SubgroupSize
+               OpExecutionMode %main LocalSize 64 1 1
+
+               ; Debug Information
+               OpName %main "main"
+               OpName %bufA "bufferA"
+               OpName %bufB "bufferB"
+               OpName %bufC "bufferC"
+
+               ; Annotations / Resource Bindings
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+               OpDecorate %gl_SubgroupSize BuiltIn SubgroupSize
+               OpDecorate %struct_bufA Block
+               OpMemberDecorate %struct_bufA 0 Offset 0
+               OpDecorate %struct_bufB Block
+               OpMemberDecorate %struct_bufB 0 Offset 0
+               OpDecorate %struct_bufC Block
+               OpMemberDecorate %struct_bufC 0 Offset 0
+               OpDecorate %bufA DescriptorSet 0
+               OpDecorate %bufA Binding 0
+               OpDecorate %bufB DescriptorSet 0
+               OpDecorate %bufB Binding 1
+               OpDecorate %bufC DescriptorSet 0
+               OpDecorate %bufC Binding 2
+               OpDecorate %arr_v2int4 ArrayStride 1
+               OpDecorate %arr_int32 ArrayStride 4
+
+               ; Core Types
+       %void = OpTypeVoid
+       %func = OpTypeFunction %void
+       %bool = OpTypeBool
+      %int32 = OpTypeInt 32 1
+     %uint32 = OpTypeInt 32 0
+       %int4 = OpTypeInt 4 1
+     %v2int4 = OpTypeVector %int4 2
+     %v3uint = OpTypeVector %uint32 3
+
+  %ptr_v3uint = OpTypePointer Input %v3uint
+  %ptr_uint32 = OpTypePointer Input %uint32
+%gl_GlobalInvocationID = OpVariable %ptr_v3uint Input
+%gl_SubgroupSize = OpVariable %ptr_uint32 Input
+
+     %uint_0 = OpConstant %uint32 0
+     %uint_1 = OpConstant %uint32 1
+     %uint_2 = OpConstant %uint32 2
+     %uint_3 = OpConstant %uint32 3
+     %uint_4 = OpConstant %uint32 4
+     %uint_8 = OpConstant %uint32 8
+    %uint_16 = OpConstant %uint32 16
+    %uint_32 = OpConstant %uint32 32
+    %uint_64 = OpConstant %uint32 64
+ %mask_1ffff = OpConstant %uint32 131071
+      %false = OpConstantFalse %bool
+    %int32_0 = OpConstant %int32 0
+
+   %arr_v2int4 = OpTypeRuntimeArray %v2int4
+ %struct_bufA = OpTypeStruct %arr_v2int4
+ %ptr_structA = OpTypePointer StorageBuffer %struct_bufA
+         %bufA = OpVariable %ptr_structA StorageBuffer
+
+ %struct_bufB = OpTypeStruct %arr_v2int4
+ %ptr_structB = OpTypePointer StorageBuffer %struct_bufB
+         %bufB = OpVariable %ptr_structB StorageBuffer
+
+  %arr_int32 = OpTypeRuntimeArray %int32
+ %struct_bufC = OpTypeStruct %arr_int32
+ %ptr_structC = OpTypePointer StorageBuffer %struct_bufC
+         %bufC = OpVariable %ptr_structC StorageBuffer
+
+  %ptr_elemA = OpTypePointer StorageBuffer %v2int4
+  %ptr_elemB = OpTypePointer StorageBuffer %v2int4
+  %ptr_elemC = OpTypePointer StorageBuffer %int32
+
+    ; Intel XMX Tile Layout: M=8, N=8, K=64. Subgroup Scope = 3
+    ; MatA: 8x64 (int4), Use = 0 (MatrixA)
+   %typeMatA = OpTypeCooperativeMatrixKHR %int4 %uint_3 %uint_8 %uint_64 %uint_0
+    ; MatB: 64x8 (int4), Use = 1 (MatrixB)
+   %typeMatB = OpTypeCooperativeMatrixKHR %int4 %uint_3 %uint_64 %uint_8 %uint_1
+    ; MatC: 8x8 (int32 Accumulator), Use = 2 (MatrixAccumulator)
+   %typeMatC = OpTypeCooperativeMatrixKHR %int32 %uint_3 %uint_8 %uint_8 %uint_2
+
+    ; Null-initialized accumulator
+   %acc_null = OpConstantNull %typeMatC
+
+    ; Compute Entry Point
+       %main = OpFunction %void None %func
+      %entry = OpLabel
+
+    ; Subgroup offset calculation: (GlobalInvocationID.x / SubgroupSize) * 64 & 0x1FFFF
+     %gid_ptr = OpAccessChain %ptr_uint32 %gl_GlobalInvocationID %uint_0
+         %gid = OpLoad %uint32 %gid_ptr
+      %sgsize = OpLoad %uint32 %gl_SubgroupSize
+       %sgidx = OpUDiv %uint32 %gid %sgsize
+     %sub_mul = OpIMul %uint32 %sgidx %uint_64
+      %offset = OpBitwiseAnd %uint32 %sub_mul %mask_1ffff
+
+    ; Load Matrix A (8x64, stride 64 elements = 32 bytes)
+      %ptrA0 = OpAccessChain %ptr_elemA %bufA %uint_0 %uint_0
+       %matA = OpCooperativeMatrixLoadKHR %typeMatA %ptrA0 %uint_64 %false
+
+    ; Load Matrix B (64x8, stride 8 elements = 4 bytes)
+      %ptrB0 = OpAccessChain %ptr_elemB %bufB %uint_0 %uint_0
+       %matB = OpCooperativeMatrixLoadKHR %typeMatB %ptrB0 %uint_8 %false
+
+    ; 16-step unrolled multiply-accumulate stress loop on XMX systolic array
+     %acc_1  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_null
+     %acc_2  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_1
+     %acc_3  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_2
+     %acc_4  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_3
+     %acc_5  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_4
+     %acc_6  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_5
+     %acc_7  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_6
+     %acc_8  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_7
+     %acc_9  = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_8
+     %acc_10 = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_9
+     %acc_11 = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_10
+     %acc_12 = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_11
+     %acc_13 = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_12
+     %acc_14 = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_13
+     %acc_15 = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_14
+  %acc_final = OpCooperativeMatrixMulAddKHR %typeMatC %matA %matB %acc_15
+
+    ; Store result (8x8 int32, stride 8 elements)
+      %ptrOut = OpAccessChain %ptr_elemC %bufC %uint_0 %offset
+               OpCooperativeMatrixStoreKHR %ptrOut %acc_final %uint_8 %false
+
+               OpReturn
+               OpFunctionEnd

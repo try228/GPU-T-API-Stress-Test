@@ -20,6 +20,7 @@
     <None Remove="Payloads/**" />
   </ItemGroup>
 
+  <!-- NuGet Dependencies -->
   <ItemGroup>
     <PackageReference Include="Silk.NET.Core" Version="2.22.0" />
     <PackageReference Include="Silk.NET.OpenGL" Version="2.22.0" />
@@ -30,5 +31,61 @@
     <PackageReference Include="Silk.NET.Input.Glfw" Version="2.22.0" />
     <PackageReference Include="Silk.NET.Maths" Version="2.22.0" />
   </ItemGroup>
+
+  <!-- Shaders ItemGroup Definition -->
+  <ItemGroup>
+    <!-- Default Slang shaders targeting Vulkan 1.0 (SPIR-V 1.0) -->
+    <SlangShader Include="Native/Vulkan/Shaders/**/*.slang">
+      <Profile>spirv_1_0</Profile>
+    </SlangShader>
+
+    <!-- Specific workloads requiring SPIR-V 1.3 (Cooperative Matrix, BF16, Dot Product) -->
+    <SlangShader Update="Native/Vulkan/Shaders/MatrixKHR/**/*.slang">
+      <Profile>spirv_1_3</Profile>
+    </SlangShader>
+    <SlangShader Update="Native/Vulkan/Shaders/MatrixNV2/**/*.slang">
+      <Profile>spirv_1_3</Profile>
+    </SlangShader>
+    <SlangShader Update="Native/Vulkan/Shaders/ALU/*bf16*.slang;Native/Vulkan/Shaders/ALU/*dp*.slang">
+      <Profile>spirv_1_3</Profile>
+    </SlangShader>
+
+    <!-- Raw SPIR-V Assembly shaders -->
+    <SpvasmShader Include="Native/Vulkan/Shaders/**/*.spvasm" />
+
+    <!-- GLSL compute shaders (NVIDIA Cooperative Matrix 1) -->
+    <GlslShader Include="Native/Vulkan/Shaders/**/*.comp" />
+  </ItemGroup>
+
+  <!-- Automatic Shader Build Pipeline for dotnet build and dotnet publish -->
+  <Target Name="CompileVulkanShaders" BeforeTargets="AssignTargetPaths;PrepareResources">
+    <PropertyGroup>
+      <SpvOutputDir>$(IntermediateOutputPath)spv/</SpvOutputDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(SpvOutputDir)" />
+
+    <!-- Compile Slang shaders -->
+    <Exec Command="slangc &quot;%(SlangShader.Identity)&quot; -target spirv -entry main -stage compute -profile %(SlangShader.Profile) -o &quot;$(SpvOutputDir)%(SlangShader.Filename).spv&quot;"
+          Condition="'@(SlangShader)' != ''" />
+
+    <!-- Compile GLSL compute shaders -->
+    <Exec Command="glslangValidator -V -S comp &quot;%(GlslShader.Identity)&quot; -o &quot;$(SpvOutputDir)%(GlslShader.Filename).spv&quot;"
+          Condition="'@(GlslShader)' != ''" />
+
+    <!-- Assemble raw SPIR-V assembly shaders with spirv-as -->
+    <Exec Command="spirv-as --target-env spv1.3 &quot;%(SpvasmShader.Identity)&quot; -o &quot;$(SpvOutputDir)%(SpvasmShader.Filename).spv&quot;"
+          Condition="'@(SpvasmShader)' != ''" />
+
+    <!-- 1. Gather all compiled .spv files from disk -->
+    <ItemGroup>
+      <_SpvCompiledFiles Include="$(SpvOutputDir)*.spv" />
+    </ItemGroup>
+
+    <!-- 2. Batch over %(_SpvCompiledFiles.Filename) to assign a distinct, valid LogicalName to each shader -->
+    <ItemGroup>
+      <EmbeddedResource Include="@(_SpvCompiledFiles)" LogicalName="Shaders.%(_SpvCompiledFiles.Filename).spv" />
+    </ItemGroup>
+  </Target>
 
 </Project>

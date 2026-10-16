@@ -9,6 +9,7 @@ using Silk.NET.OpenGL;
 using Silk.NET.Vulkan;
 using Silk.NET.Windowing;
 using Silk.NET.Windowing.Glfw;
+using Sampler = Silk.NET.Vulkan.Sampler;
 
 using MouseButton = Silk.NET.Input.MouseButton;
 using VkBuffer = Silk.NET.Vulkan.Buffer;
@@ -113,6 +114,22 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private VkBuffer _ssboBuffer;
     private DeviceMemory _ssboMemory;
 
+    private Image _tmuImage2D;
+    private DeviceMemory _tmuMem2D;
+    private ImageView _tmuView2D;
+
+    private Image _tmuImageBC;
+    private DeviceMemory _tmuMemBC;
+    private ImageView _tmuViewBC;
+
+    private Image _tmuImage3D;
+    private DeviceMemory _tmuMem3D;
+    private ImageView _tmuView3D;
+
+    private Sampler _samplerLinear;
+    private Sampler _samplerAniso;
+    private Sampler _sampler3D;
+
     private VulkanCapabilityProbe _capabilityProbe = null!;
     private VulkanTestRegistry _testRegistry = null!;
 
@@ -149,21 +166,27 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         ["mat_int64"]    = new("mat_int64",    VulkanShaders.MAT_INT64_OPS_PER_INVOCATION,"IOP"),
 
         ["mat_mod_nv1"]  = new("mat_mod_nv1",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP"),
-        ["mat_mod_nv2"]  = new("mat_mod_nv2",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP")
+        ["mat_mod_nv2"]  = new("mat_mod_nv2",  VulkanShaders.MAT_FP16_OPS_PER_INVOCATION, "FLOP"),
+
+        ["tmu_bdt"]   = new("tmu_bdt",   VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+        ["tmu_aniso"] = new("tmu_aniso", VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+        ["tmu_bc"]    = new("tmu_bc",    VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL"),
+        ["tmu_3d"]    = new("tmu_3d",    VulkanShaders.TMU_SAMPLES_PER_INVOCATION, "TEXEL")
     };
 
-    private static int GetBatchCount(string id) => id switch
-    {
-        "alu_fp32" or "alu_fp16" or "alu_bf16" or "alu_int32" or "alu_int16" or "alu_int8" => 256,
-        "alu_dp4a" or "alu_dp2a" => 256,
-        "mat_fp32" or "mat_fp16" or "mat_bf16" or "mat_int8" or "mat_int16" or "mat_int32" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" => 128,
-        "alu_fp64" or "alu_int64" or "mat_fp64" or "mat_int64" or "mat_mod_nv1" or "mat_mod_nv2" => 128,
-        "mem_l1l2" => 256,
-        "mem_l3"   => 128,
-        "mem_bw"   => 64,
-        "mem_lat"  => 8,
-        _ => 128
-    };
+private static int GetBatchCount(string id) => id switch
+{
+    "alu_fp32" or "alu_fp16" or "alu_bf16" or "alu_int32" or "alu_int16" or "alu_int8" => 256,
+    "alu_dp4a" or "alu_dp2a" => 256,
+    "mat_fp32" or "mat_fp16" or "mat_bf16" or "mat_int8" or "mat_int16" or "mat_int32" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" => 128,
+    "alu_fp64" or "alu_int64" or "mat_fp64" or "mat_int64" or "mat_mod_nv1" or "mat_mod_nv2" => 128,
+    "tmu_bdt" or "tmu_aniso" or "tmu_bc" or "tmu_3d" => 32,
+    "mem_l1l2" => 256,
+    "mem_l3"   => 128,
+    "mem_bw"   => 64,
+    "mem_lat"  => 8,
+    _ => 128
+};
 
     private bool HasPipelineFor(string id)
     {
@@ -415,18 +438,18 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         Unsafe.InitBlock(pQf, 0, (uint)(sizeof(QueueFamilyProperties) * qfCount));
         _vk.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &qfCount, pQf);
 
-        bool foundComputeQueue = false;
-        for (uint i = 0; i < qfCount; i++)
-        {
-            if (pQf[i].QueueFlags.HasFlag(QueueFlags.ComputeBit))
-            {
-                _computeQueueFamilyIndex = i;
-                foundComputeQueue = true;
-                break;
-            }
-        }
-
-        if (!foundComputeQueue) throw new InvalidOperationException("No Vulkan compute queue found.");
+        int bestQueue = -1;
+for (uint i = 0; i < qfCount; i++)
+{
+    var flags = pQf[i].QueueFlags;
+    if (flags.HasFlag(QueueFlags.ComputeBit) && flags.HasFlag(QueueFlags.GraphicsBit))
+    {
+        bestQueue = (int)i;
+        break;
+    }
+    if (flags.HasFlag(QueueFlags.ComputeBit) && bestQueue == -1)
+        bestQueue = (int)i;
+}
 
         // 1. Initialize Logical Device (must complete before any buffers, descriptors, or pipelines are created)
         InitializeLogicalDevice();
@@ -471,8 +494,8 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _vk.AllocateMemory(_device, &allocInfo, null, out _ssboMemory);
         _vk.BindBufferMemory(_device, _ssboBuffer, _ssboMemory, 0);
 
-        // 3. Create Descriptor Set Layout and Pipeline Layout
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[3];
+       // 3. Create Descriptor Set Layout and Pipeline Layout (3 SSBO + 4 CombinedImageSampler)
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[7];
         for (uint b = 0; b < 3; b++)
         {
             bindings[b] = new()
@@ -483,12 +506,22 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 StageFlags = ShaderStageFlags.ComputeBit
             };
         }
+        for (uint b = 3; b < 7; b++)
+        {
+            bindings[b] = new()
+            {
+                Binding = b,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.ComputeBit
+            };
+        }
 
         DescriptorSetLayoutCreateInfo dslInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
             PNext = null,
-            BindingCount = 3,
+            BindingCount = 7,
             PBindings = bindings
         };
 
@@ -505,14 +538,17 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         _vk.CreatePipelineLayout(_device, &plInfo, null, out _pipeLayout);
 
-        DescriptorPoolSize poolSize = new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 };
+        DescriptorPoolSize* poolSizes = stackalloc DescriptorPoolSize[2];
+        poolSizes[0] = new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 };
+        poolSizes[1] = new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = 4 };
+
         DescriptorPoolCreateInfo dpInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
             PNext = null,
             MaxSets = 1,
-            PoolSizeCount = 1,
-            PPoolSizes = &poolSize
+            PoolSizeCount = 2,
+            PPoolSizes = poolSizes
         };
 
         _vk.CreateDescriptorPool(_device, &dpInfo, null, out _descPool);
@@ -572,7 +608,8 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             _vk.CreateFence(_device, &fenceInfo, null, out _inFlightFences[i]);
         }
 
-        // 5. Initialize Compute Pipelines (called strictly after Device and Pipeline Layout are ready)
+        // 5. Initialize Compute Pipelines & Resources
+        InitializeTmuResources(memProps);
         InitializePipelines();
         InitializeBufferOnGpu();
     }
@@ -723,6 +760,8 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         feat2.features.ShaderFloat64 = _capabilityProbe.HasFloat64;
         feat2.features.ShaderInt64 = _capabilityProbe.HasInt64;
         feat2.features.ShaderInt16 = _capabilityProbe.HasInt16;
+        feat2.features.SamplerAnisotropy = _capabilityProbe.HasSamplerAnisotropy;
+        feat2.features.TextureCompressionBC = _capabilityProbe.HasTextureCompressionBC;
         feat2.pNext = pNextChain;
 
         byte** ppDevExts = stackalloc byte*[Math.Max(1, devExtensions.Count)];
@@ -758,6 +797,180 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             SilkMarshal.Free((nint)ppDevExts[i]);
 
         _vk.GetDeviceQueue(_device, _computeQueueFamilyIndex, 0, out _computeQueue);
+    }
+
+    private void InitializeTmuResources(PhysicalDeviceMemoryProperties memProps)
+    {
+/// <summary>
+/// Selects an optimal physical device memory type index matching the required buffer/image constraints.
+/// Prioritizes requested property flags (e.g. DeviceLocal) and gracefully falls back to any conformant memory index.
+/// </summary>
+/// <param name="bits">Bitmask of compatible memory type indices reported by vkGetImageMemoryRequirements.</param>
+/// <param name="preferredFlags">Preferred memory property flags (e.g. DeviceLocalBit).</param>
+/// <returns>A valid physical memory type index accepted by the Vulkan specification.</returns>
+/// <exception cref="InvalidOperationException">Thrown when no supported memory type satisfies the allocation constraints.</exception>
+uint FindMemoryType(uint bits, MemoryPropertyFlags preferredFlags)
+{
+    // Primary pass: look for a memory type that satisfies both the bitmask and the preferred property flags
+    for (uint i = 0; i < memProps.MemoryTypeCount; i++)
+    {
+        if ((bits & (1u << (int)i)) != 0 && (memProps.MemoryTypes[(int)i].PropertyFlags & preferredFlags) == preferredFlags)
+        {
+            return i;
+        }
+    }
+
+    // Fallback pass: accept any valid memory type permitted by the driver bitmask (avoids hard crashes on unified architectures)
+    for (uint i = 0; i < memProps.MemoryTypeCount; i++)
+    {
+        if ((bits & (1u << (int)i)) != 0)
+        {
+            return i;
+        }
+    }
+
+    throw new InvalidOperationException("Failed to find a compatible Vulkan memory type for TMU resource allocation.");
+}
+
+        // 1. Creating samplers
+        SamplerCreateInfo sampInfo = new()
+        {
+            SType = StructureType.SamplerCreateInfo,
+            MagFilter = Filter.Linear,
+            MinFilter = Filter.Linear,
+            MipmapMode = SamplerMipmapMode.Linear,
+            AddressModeU = SamplerAddressMode.Repeat,
+            AddressModeV = SamplerAddressMode.Repeat,
+            AddressModeW = SamplerAddressMode.Repeat,
+            MaxLod = 11.0f
+        };
+        _vk.CreateSampler(_device, &sampInfo, null, out _samplerLinear);
+
+        sampInfo.AnisotropyEnable = _capabilityProbe.HasSamplerAnisotropy;
+        sampInfo.MaxAnisotropy = _capabilityProbe.HasSamplerAnisotropy ? 16.0f : 1.0f;
+        _vk.CreateSampler(_device, &sampInfo, null, out _samplerAniso);
+
+        sampInfo.AnisotropyEnable = false;
+        _vk.CreateSampler(_device, &sampInfo, null, out _sampler3D);
+
+        // 2. Creating 2D RGBA8 texture (1024x1024, 11 mip levels)
+        ImageCreateInfo img2DInfo = new()
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type2D,
+            Format = Format.R8G8B8A8Unorm,
+            Extent = new Extent3D(1024, 1024, 1),
+            MipLevels = 11,
+            ArrayLayers = 1,
+            Samples = SampleCountFlags.Count1Bit,
+            Tiling = ImageTiling.Optimal,
+            Usage = ImageUsageFlags.SampledBit | ImageUsageFlags.TransferDstBit
+        };
+        _vk.CreateImage(_device, &img2DInfo, null, out _tmuImage2D);
+        MemoryRequirements reqs;
+        _vk.GetImageMemoryRequirements(_device, _tmuImage2D, &reqs);
+        MemoryAllocateInfo alloc = new() { SType = StructureType.MemoryAllocateInfo, AllocationSize = reqs.Size, MemoryTypeIndex = FindMemoryType(reqs.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit) };
+        _vk.AllocateMemory(_device, &alloc, null, out _tmuMem2D);
+        _vk.BindImageMemory(_device, _tmuImage2D, _tmuMem2D, 0);
+
+        ImageViewCreateInfo view2DInfo = new()
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = _tmuImage2D,
+            ViewType = ImageViewType.Type2D,
+            Format = Format.R8G8B8A8Unorm,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 11, 0, 1)
+        };
+        _vk.CreateImageView(_device, &view2DInfo, null, out _tmuView2D);
+
+        // 3. Creating BC texture (1024x1024)
+        Format bcFormat = _capabilityProbe.HasTextureCompressionBC ? (Format)145 /* VK_FORMAT_BC7_UNORM_BLOCK */ : Format.R8G8B8A8Unorm;
+        ImageCreateInfo imgBCInfo = img2DInfo;
+        imgBCInfo.Format = bcFormat;
+        imgBCInfo.MipLevels = 1;
+        _vk.CreateImage(_device, &imgBCInfo, null, out _tmuImageBC);
+        _vk.GetImageMemoryRequirements(_device, _tmuImageBC, &reqs);
+        alloc.AllocationSize = reqs.Size;
+        alloc.MemoryTypeIndex = FindMemoryType(reqs.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit);
+        _vk.AllocateMemory(_device, &alloc, null, out _tmuMemBC);
+        _vk.BindImageMemory(_device, _tmuImageBC, _tmuMemBC, 0);
+
+        ImageViewCreateInfo viewBCInfo = view2DInfo;
+        viewBCInfo.Image = _tmuImageBC;
+        viewBCInfo.Format = bcFormat;
+        viewBCInfo.SubresourceRange.LevelCount = 1;
+        _vk.CreateImageView(_device, &viewBCInfo, null, out _tmuViewBC);
+
+        // 4. Creating 3D texture (128x128x128)
+        ImageCreateInfo img3DInfo = new()
+        {
+            SType = StructureType.ImageCreateInfo,
+            ImageType = ImageType.Type3D,
+            Format = Format.R8G8B8A8Unorm,
+            Extent = new Extent3D(128, 128, 128),
+            MipLevels = 1,
+            ArrayLayers = 1,
+            Samples = SampleCountFlags.Count1Bit,
+            Tiling = ImageTiling.Optimal,
+            Usage = ImageUsageFlags.SampledBit | ImageUsageFlags.TransferDstBit
+        };
+        _vk.CreateImage(_device, &img3DInfo, null, out _tmuImage3D);
+        _vk.GetImageMemoryRequirements(_device, _tmuImage3D, &reqs);
+        alloc.AllocationSize = reqs.Size;
+        alloc.MemoryTypeIndex = FindMemoryType(reqs.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit);
+        _vk.AllocateMemory(_device, &alloc, null, out _tmuMem3D);
+        _vk.BindImageMemory(_device, _tmuImage3D, _tmuMem3D, 0);
+
+        ImageViewCreateInfo view3DInfo = new()
+        {
+            SType = StructureType.ImageViewCreateInfo,
+            Image = _tmuImage3D,
+            ViewType = ImageViewType.Type3D,
+            Format = Format.R8G8B8A8Unorm,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1)
+        };
+        _vk.CreateImageView(_device, &view3DInfo, null, out _tmuView3D);
+
+        // 5.
+        CommandBufferAllocateInfo cbAlloc = new() { SType = StructureType.CommandBufferAllocateInfo, CommandPool = _cmdPool, Level = CommandBufferLevel.Primary, CommandBufferCount = 1 };
+        CommandBuffer cb;
+        _vk.AllocateCommandBuffers(_device, &cbAlloc, &cb);
+        CommandBufferBeginInfo cbBegin = new() { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
+        _vk.BeginCommandBuffer(cb, &cbBegin);
+
+        ImageMemoryBarrier* barriers = stackalloc ImageMemoryBarrier[3];
+        barriers[0] = new() { SType = StructureType.ImageMemoryBarrier, Image = _tmuImage2D, OldLayout = ImageLayout.Undefined, NewLayout = ImageLayout.ShaderReadOnlyOptimal, SrcAccessMask = 0, DstAccessMask = AccessFlags.ShaderReadBit, SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 11, 0, 1) };
+        barriers[1] = new() { SType = StructureType.ImageMemoryBarrier, Image = _tmuImageBC, OldLayout = ImageLayout.Undefined, NewLayout = ImageLayout.ShaderReadOnlyOptimal, SrcAccessMask = 0, DstAccessMask = AccessFlags.ShaderReadBit, SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1) };
+        barriers[2] = new() { SType = StructureType.ImageMemoryBarrier, Image = _tmuImage3D, OldLayout = ImageLayout.Undefined, NewLayout = ImageLayout.ShaderReadOnlyOptimal, SrcAccessMask = 0, DstAccessMask = AccessFlags.ShaderReadBit, SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1) };
+        _vk.CmdPipelineBarrier(cb, PipelineStageFlags.TopOfPipeBit, PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 3, barriers);
+
+        _vk.EndCommandBuffer(cb);
+        SubmitInfo submit = new() { SType = StructureType.SubmitInfo, CommandBufferCount = 1, PCommandBuffers = &cb };
+        _vk.QueueSubmit(_computeQueue, 1, &submit, default);
+        _vk.QueueWaitIdle(_computeQueue);
+        _vk.FreeCommandBuffers(_device, _cmdPool, 1, &cb);
+
+        // 6. Writing descriptors 3, 4, 5, 6
+        DescriptorImageInfo* imgInfos = stackalloc DescriptorImageInfo[4];
+        imgInfos[0] = new() { Sampler = _samplerLinear, ImageView = _tmuView2D, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
+        imgInfos[1] = new() { Sampler = _samplerAniso,  ImageView = _tmuView2D, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
+        imgInfos[2] = new() { Sampler = _samplerLinear, ImageView = _tmuViewBC, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
+        imgInfos[3] = new() { Sampler = _sampler3D,      ImageView = _tmuView3D, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
+
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[4];
+        for (uint i = 0; i < 4; i++)
+        {
+            writes[i] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _descSet,
+                DstBinding = 3 + i,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = 1,
+                PImageInfo = &imgInfos[i]
+            };
+        }
+        _vk.UpdateDescriptorSets(_device, 4, writes, 0, null);
     }
 
     private void InitializeBufferOnGpu()
@@ -855,15 +1068,33 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         return pipeline;
     }
 
-    private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = false)
+private void SafeRegisterPipeline(string id, uint[]? spirv, bool isCoopMat = false)
     {
-        if (spirv == null) return;
+        if (spirv == null)
+        {
+            Console.WriteLine($"[Pipeline Warning] Skipped '{id}': SPIR-V bytecode is null.");
+            return;
+        }
         try
         {
             var p = CreateComputePipeline(spirv, isCoopMat, out var sm);
-            if (p.Handle != 0) _pipelines[id] = (p, sm);
+            if (p.Handle != 0)
+            {
+                _pipelines[id] = (p, sm);
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[Pipeline Error] CreateComputePipeline returned null handle for '{id}'.");
+                Console.ResetColor();
+            }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"[Pipeline Exception] Failed to initialize '{id}': {ex.Message}");
+            Console.ResetColor();
+        }
     }
 
     /// <summary>
@@ -951,6 +1182,12 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         SafeRegisterPipeline("mem_l3",   VulkanShaders.GetShaderL3Cache());
         SafeRegisterPipeline("mem_bw",   VulkanShaders.GetShaderMem());
         SafeRegisterPipeline("mem_lat",  VulkanShaders.GetShaderLatency());
+        // 6. TMU Texture Stress Pipelines
+        SafeRegisterPipeline("tmu_bdt",   VulkanShaders.GetShaderTmuBilinear());
+        if (_capabilityProbe.HasSamplerAnisotropy)
+            SafeRegisterPipeline("tmu_aniso", VulkanShaders.GetShaderTmuAniso());
+        SafeRegisterPipeline("tmu_bc",    VulkanShaders.GetShaderTmuBC());
+        SafeRegisterPipeline("tmu_3d",    VulkanShaders.GetShaderTmu3D());
     }
 
     private void DispatchLinear(CommandBuffer cb, uint totalWorkGroups)
@@ -1308,6 +1545,12 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 ? (1_000_000_000.0 / (latDps * 4096.0))
                 : 0.0;
 
+            double tmuGtexels = 0.0;
+            if (_testRegistry.IsActive("tmu_bdt"))   tmuGtexels = Math.Max(tmuGtexels, (GetDps("tmu_bdt") * _wgAluAndL1 * 64.0 * VulkanShaders.TMU_SAMPLES_PER_INVOCATION) / 1e9);
+            if (_testRegistry.IsActive("tmu_aniso")) tmuGtexels = Math.Max(tmuGtexels, (GetDps("tmu_aniso") * _wgAluAndL1 * 64.0 * VulkanShaders.TMU_SAMPLES_PER_INVOCATION * 16.0) / 1e9);
+            if (_testRegistry.IsActive("tmu_bc"))    tmuGtexels = Math.Max(tmuGtexels, (GetDps("tmu_bc") * _wgAluAndL1 * 64.0 * VulkanShaders.TMU_SAMPLES_PER_INVOCATION) / 1e9);
+            if (_testRegistry.IsActive("tmu_3d"))    tmuGtexels = Math.Max(tmuGtexels, (GetDps("tmu_3d") * _wgAluAndL1 * 64.0 * VulkanShaders.TMU_SAMPLES_PER_INVOCATION) / 1e9);
+
             double totalActiveDps = _isBenchmarking ? _smoothedDps : 0.0;
 
             fixed (uint* pUi = uiPixels)
@@ -1318,7 +1561,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                     _customInputBuffer, _isCustomFocused, elapsed, totalActiveDps, 0.0, null, ThemePalette.Vulkan,
                     _mouseX, _mouseY, animTime, _isSettingsOpen, _testRegistry,
                     fp32Tflops, fp64Tflops, fp16Tflops, bf16Tflops, int32Tiops, int64Tiops, int16Tiops, int8Tiops,
-                    dp2aTops, dp4aTops, 0.0, memBandwidthGbs, cacheL1L2Tbs, cacheL3Tbs, latencyNs,
+                    dp2aTops, dp4aTops, tmuGtexels, memBandwidthGbs, cacheL1L2Tbs, cacheL3Tbs, latencyNs,
                     matFp16Tops, matBf16Tops, matInt8Tops);
 
                 gl.ActiveTexture(TextureUnit.Texture0);
@@ -1443,6 +1686,22 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             if (_cmdPool.Handle != 0) _vk.DestroyCommandPool(_device, _cmdPool, null);
             if (_ssboBuffer.Handle != 0) _vk.DestroyBuffer(_device, _ssboBuffer, null);
             if (_ssboMemory.Handle != 0) _vk.FreeMemory(_device, _ssboMemory, null);
+
+            if (_tmuView2D.Handle != 0) _vk.DestroyImageView(_device, _tmuView2D, null);
+            if (_tmuImage2D.Handle != 0) _vk.DestroyImage(_device, _tmuImage2D, null);
+            if (_tmuMem2D.Handle != 0) _vk.FreeMemory(_device, _tmuMem2D, null);
+
+            if (_tmuViewBC.Handle != 0) _vk.DestroyImageView(_device, _tmuViewBC, null);
+            if (_tmuImageBC.Handle != 0) _vk.DestroyImage(_device, _tmuImageBC, null);
+            if (_tmuMemBC.Handle != 0) _vk.FreeMemory(_device, _tmuMemBC, null);
+
+            if (_tmuView3D.Handle != 0) _vk.DestroyImageView(_device, _tmuView3D, null);
+            if (_tmuImage3D.Handle != 0) _vk.DestroyImage(_device, _tmuImage3D, null);
+            if (_tmuMem3D.Handle != 0) _vk.FreeMemory(_device, _tmuMem3D, null);
+
+            if (_samplerLinear.Handle != 0) _vk.DestroySampler(_device, _samplerLinear, null);
+            if (_samplerAniso.Handle != 0) _vk.DestroySampler(_device, _samplerAniso, null);
+            if (_sampler3D.Handle != 0) _vk.DestroySampler(_device, _sampler3D, null);
 
             _vk.DestroyDevice(_device, null);
         }

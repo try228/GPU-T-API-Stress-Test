@@ -245,11 +245,22 @@ public static class PixelUiEngine
             if (registry != null && registry.IsActive("mat_mod_nv2"))               tensorList.Add("NV_COOPMAT2: ACTIVE");
             if (registry != null && registry.IsActive("mat_int4"))                  tensorList.Add("INT4 (XMX): ENGAGED");
             if (registry != null && registry.IsActive("mat_int64"))                 tensorList.Add("INT64: ENGAGED");
-            if ((registry != null && (registry.IsActive("tmu_aniso") || registry.IsActive("tmu_bdt"))) || tmuGtexels > 0)
-                tensorList.Add($"TMU: {tmuGtexels:F1} GTex/s");
             DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "TENSOR & AI  |   ", tensorList, isBenchmarking ? 0xFFFF8A65 : 0xFF8B949E);
 
-            // 4. Memory Hierarchy
+            // 4. TMU Texture Units
+            bool hasTmu = (registry != null && (registry.IsActive("tmu_bdt") || registry.IsActive("tmu_aniso") || registry.IsActive("tmu_bc") || registry.IsActive("tmu_3d"))) || tmuGtexels > 0;
+            if (hasTmu)
+            {
+                List<string> tmuList = new();
+                if (registry != null && registry.IsActive("tmu_bdt"))   tmuList.Add("BILINEAR: ON");
+                if (registry != null && registry.IsActive("tmu_aniso")) tmuList.Add("16X ANISO: ON");
+                if (registry != null && registry.IsActive("tmu_bc"))    tmuList.Add("BC DECOMP: ON");
+                if (registry != null && registry.IsActive("tmu_3d"))    tmuList.Add("3D VOL: ON");
+                tmuList.Add($"RATE: {tmuGtexels:F1} GTex/s");
+                DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "TEXTURE TMU  |   ", tmuList, isBenchmarking ? 0xFF00E5FF : 0xFF8B949E);
+            }
+
+            // 5. Memory Hierarchy
             List<string> memList = new();
             if (registry != null ? registry.IsActive("mem_l1l2") : cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
             if (registry != null ? registry.IsActive("mem_l3")   : cacheL3Tbs > 0)   memList.Add($"L3: {cacheL3Tbs:F2} TB/s");
@@ -398,7 +409,7 @@ public static class PixelUiEngine
             Rect itemRect = new(itemX, itemY, colWidth, 14);
 
             // NV1 locks NV2 and formats not in VkComponentTypeNV (BF16, FP8, INT4)
-            bool isBlockedByNv1 = isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4");
+            bool isBlockedByNv1 = isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64");
             bool isInteractable = item.IsSupported && !isBenchmarking && !isBlockedByNv1;
 
             if (itemRect.Contains(mouseX, mouseY) && isInteractable)
@@ -445,7 +456,7 @@ public static class PixelUiEngine
                 for (int k = 0; k < registry.Items.Count; k++)
                 {
                     var other = registry.Items[k];
-                    if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4")
+                    if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64")
                     {
                         other.IsChecked = false;
                     }
@@ -491,7 +502,7 @@ public static class PixelUiEngine
             if (itemRect.Contains(mouseX, mouseY) && item.IsSupported)
             {
                 // Disallow clicking NV2 or incompatible formats while NV1 is active
-                if (isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4"))
+                if (isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64"))
                 {
                     return;
                 }
@@ -504,7 +515,7 @@ public static class PixelUiEngine
                     for (int k = 0; k < registry.Items.Count; k++)
                     {
                         var other = registry.Items[k];
-                        if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4")
+                        if (other.Id == "mat_mod_nv2" || other.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64")
                         {
                             other.IsChecked = false;
                         }

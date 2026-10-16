@@ -118,10 +118,10 @@ Items.Add(new("mat_mod_nv1",  "Legacy NV CoopMat 1",   "MATRIX MODS", probe.HasC
         Items.Add(new("ds_stencil", "8-Bit Stencil Rate",  "DEPTH / STENCIL", true, "GPixels/s"));
 
         // 10. TMU TEXTURES
-        Items.Add(new("tmu_bdt",   "Bilinear Filtering", "TMU TEXTURES", true, "GTexels/s"));
-        Items.Add(new("tmu_aniso", "16x Anisotropic",    "TMU TEXTURES", true, "GTexels/s"));
-        Items.Add(new("tmu_bc",    "BC1-BC7 Decompress", "TMU TEXTURES", true, "GTexels/s"));
-        Items.Add(new("tmu_3d",    "3D/CubeMap Fetch",   "TMU TEXTURES", true, "GTexels/s"));
+        Items.Add(new("tmu_bdt",   "Bilinear Filtering", "TMU TEXTURES", true, "GTex/s"));
+        Items.Add(new("tmu_aniso", "16x Anisotropic",    "TMU TEXTURES", probe.HasSamplerAnisotropy, "GTex/s"));
+        Items.Add(new("tmu_bc",    "BC1-BC7 Decompress", "TMU TEXTURES", probe.HasTextureCompressionBC, "GTex/s"));
+        Items.Add(new("tmu_3d",    "3D/CubeMap Fetch",   "TMU TEXTURES", true, "GTex/s"));
     }
 
     public bool IsActive(string id)

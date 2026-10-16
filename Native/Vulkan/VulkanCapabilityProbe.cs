@@ -177,6 +177,9 @@ public sealed unsafe class VulkanCapabilityProbe
 
     public bool HasDotProduct16Bit { get; private set; }
 
+    public bool HasSamplerAnisotropy { get; private set; }
+    public bool HasTextureCompressionBC { get; private set; }
+
     public bool HasBFloat16Extension { get; private set; }
     public bool HasShaderBFloat16 { get; private set; }
     public bool HasBFloat16DotProduct { get; private set; }
@@ -374,6 +377,8 @@ public sealed unsafe class VulkanCapabilityProbe
         HasFloat64 = features.ShaderFloat64;
         HasInt64 = features.ShaderInt64;
         HasInt16 = features.ShaderInt16;
+        HasSamplerAnisotropy = features.SamplerAnisotropy;
+        HasTextureCompressionBC = features.TextureCompressionBC;
 
         // Query Float16 and Int8 hardware execution
         if (_supportedExtensions.Contains("VK_KHR_shader_float16_int8"))
@@ -586,9 +591,10 @@ public sealed unsafe class VulkanCapabilityProbe
         }
     }
 
-    private void ApplyMockProfile(MockGpuTarget target)
+private void ApplyMockProfile(MockGpuTarget target)
     {
         HasFloat64 = true; HasInt64 = true; HasInt16 = true;
+        HasSamplerAnisotropy = true; HasTextureCompressionBC = true;
         SubgroupSize = 32;
         _coopMatDimensions.Clear();
 
