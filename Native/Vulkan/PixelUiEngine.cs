@@ -158,7 +158,8 @@ public static class PixelUiEngine
         double rtMRaysSec = 0.0,
         double ropFillrateGpix = 0.0,
         double ropBlendGblends = 0.0,
-        double dsRateGpix = 0.0)
+        double dsRateGpix = 0.0,
+        double videoFps = 0.0)
     {
         RenderGpuZBackground(buffer, width, height, isBenchmarking ? animTime : 0.0f, isBenchmarking, theme);
 
@@ -222,8 +223,12 @@ public static class PixelUiEngine
                              registry.IsActive("rop_blend") || registry.IsActive("rop_msaa"))) || ropFillrateGpix > 0 || ropBlendGblends > 0;
         bool hasDsActive = (registry != null && (registry.IsActive("ds_test") || registry.IsActive("ds_write") || registry.IsActive("ds_earlyz") ||
                             registry.IsActive("ds_hiz") || registry.IsActive("ds_stencil"))) || dsRateGpix > 0;
+        bool hasVideoActive = (registry != null && (registry.IsActive("vid_dec_av1") || registry.IsActive("vid_dec_hevc") ||
+                               registry.IsActive("vid_dec_h264") || registry.IsActive("vid_dec_vp9") ||
+                               registry.IsActive("vid_enc_av1") || registry.IsActive("vid_enc_hevc") ||
+                               registry.IsActive("vid_enc_h264"))) || videoFps > 0;
 
-        if (hasGranularCompute || hasGranularMemory || hasRtActive || hasRopActive || hasDsActive)
+        if (hasGranularCompute || hasGranularMemory || hasRtActive || hasRopActive || hasDsActive || hasVideoActive)
         {
             // 1. ALU Floats
             List<string> floatList = new();
@@ -298,7 +303,22 @@ public static class PixelUiEngine
                 DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "DEPTH/STENCIL|   ", dsList, isBenchmarking ? 0xFFE040FB : 0xFF8B949E);
             }
 
-            // 7. TMU Texture Units
+// 7. Vulkan Video Engine
+if (hasVideoActive)
+{
+    List<string> vidList = new();
+    if (registry != null && registry.IsActive("vid_dec_av1"))  vidList.Add("DEC AV1: ON");
+    if (registry != null && registry.IsActive("vid_dec_hevc")) vidList.Add("DEC H265: ON");
+    if (registry != null && registry.IsActive("vid_dec_h264")) vidList.Add("DEC H264: ON");
+    if (registry != null && registry.IsActive("vid_dec_vp9"))  vidList.Add("DEC VP9: ON");
+    if (registry != null && registry.IsActive("vid_enc_av1"))  vidList.Add("ENC AV1: ON");
+    if (registry != null && registry.IsActive("vid_enc_hevc")) vidList.Add("ENC H265: ON");
+    if (registry != null && registry.IsActive("vid_enc_h264")) vidList.Add("ENC H264: ON");
+    if (videoFps > 0) vidList.Add($"RATE: {videoFps:F0} FPS");
+    DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "VULKAN VIDEO |   ", vidList, isBenchmarking ? 0xFF26A69A : 0xFF8B949E);
+}
+
+            // 8. TMU Texture Units
             bool hasTmu = (registry != null && (registry.IsActive("tmu_bdt") || registry.IsActive("tmu_aniso") || registry.IsActive("tmu_bc") || registry.IsActive("tmu_3d"))) || tmuGtexels > 0;
             if (hasTmu)
             {
@@ -311,7 +331,7 @@ public static class PixelUiEngine
                 DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "TEXTURE TMU  |   ", tmuList, isBenchmarking ? 0xFF00E5FF : 0xFF8B949E);
             }
 
-            // 8. Memory Hierarchy
+            // 9. Memory Hierarchy
             List<string> memList = new();
             if (registry != null ? registry.IsActive("mem_l1l2") : cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
             if (registry != null ? registry.IsActive("mem_l3")   : cacheL3Tbs > 0)   memList.Add($"L3: {cacheL3Tbs:F2} TB/s");
@@ -333,7 +353,7 @@ public static class PixelUiEngine
         }
 
         string activeStatus = registry != null
-            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Workloads Engaged   •   Direct Vulkan 1.0 (Compute & Graphics)"
+            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Workloads Engaged   •   Direct Vulkan 1.0 (Compute, Graphics & Video)"
             : "PIPELINE STATUS: Direct Native Vulkan 1.0 Execution";
         DrawString(buffer, width, 50, Math.Min(currentY + 2, hudY + 168), activeStatus, accentColor, 1);
 

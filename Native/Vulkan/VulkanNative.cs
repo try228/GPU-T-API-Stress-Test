@@ -68,6 +68,33 @@ public static class VulkanConstants
 
     // Float8 (VK_EXT_shader_float8)
     public const StructureType StructureTypePhysicalDeviceShaderFloat8FeaturesEXT = (StructureType)1000600000;
+
+    // Vulkan Video Core
+    public const StructureType StructureTypeVideoProfileInfoKHR = (StructureType)1000023000;
+    public const StructureType StructureTypeVideoCapabilitiesKHR = (StructureType)1000023001;
+    public const StructureType StructureTypeVideoPictureResourceInfoKHR = (StructureType)1000023002;
+    public const StructureType StructureTypeVideoSessionMemoryRequirementsKHR = (StructureType)1000023003;
+    public const StructureType StructureTypeBindVideoSessionMemoryInfoKHR = (StructureType)1000023004;
+    public const StructureType StructureTypeVideoSessionCreateInfoKHR = (StructureType)1000023005;
+    public const StructureType StructureTypeVideoSessionParametersCreateInfoKHR = (StructureType)1000023006;
+    public const StructureType StructureTypeVideoBeginCodingInfoKHR = (StructureType)1000023008;
+    public const StructureType StructureTypeVideoEndCodingInfoKHR = (StructureType)1000023009;
+    public const StructureType StructureTypeVideoReferenceSlotInfoKHR = (StructureType)1000023011;
+
+    // Vulkan Video Decode
+    public const StructureType StructureTypeVideoDecodeInfoKHR = (StructureType)1000024000;
+    public const StructureType StructureTypeVideoDecodeCapabilitiesKHR = (StructureType)1000024001;
+    public const StructureType StructureTypeVideoDecodeH264ProfileInfoKHR = (StructureType)1000040000;
+    public const StructureType StructureTypeVideoDecodeH265ProfileInfoKHR = (StructureType)1000187000;
+    public const StructureType StructureTypeVideoDecodeAV1ProfileInfoKHR = (StructureType)1000512000;
+    public const StructureType StructureTypeVideoDecodeVP9ProfileInfoKHR = (StructureType)1000515000;
+
+    // Vulkan Video Encode
+    public const StructureType StructureTypeVideoEncodeInfoKHR = (StructureType)1000299000;
+    public const StructureType StructureTypeVideoEncodeCapabilitiesKHR = (StructureType)1000299001;
+    public const StructureType StructureTypeVideoEncodeH264ProfileInfoKHR = (StructureType)1000038000;
+    public const StructureType StructureTypeVideoEncodeH265ProfileInfoKHR = (StructureType)1000039000;
+    public const StructureType StructureTypeVideoEncodeAV1ProfileInfoKHR = (StructureType)1000514000;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 240)]
@@ -269,6 +296,95 @@ public unsafe struct VkPerformanceQuerySubmitInfoKHR
     public void* pNext;
     public uint counterPassIndex;
     private uint _pad;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoProfileInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint videoCodecOperation;
+    public uint chromaSubsampling;
+    public uint lumaBitDepth;
+    public uint chromaBitDepth;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoSessionCreateInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint queueFamilyIndex;
+    public uint flags;
+    public VkVideoProfileInfoKHR* pVideoProfile;
+    public Format pictureFormat;
+    public Extent2D maxCodedExtent;
+    public Format referencePictureFormat;
+    public uint maxDpbSlots;
+    public uint maxActiveReferencePictures;
+    public ExtensionProperties* pStdHeaderVersion;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoBeginCodingInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint flags;
+    public ulong videoSession;
+    public ulong videoSessionParameters;
+    public uint referenceSlotCount;
+    public void* pReferenceSlots;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoEndCodingInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint flags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoPictureResourceInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public Offset2D codedOffset;
+    public Extent2D codedExtent;
+    public uint baseArrayLayer;
+    public ImageView imageViewBinding;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoDecodeInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint flags;
+    public Silk.NET.Vulkan.Buffer srcBuffer;
+    public ulong srcBufferOffset;
+    public ulong srcBufferRange;
+    public VkVideoPictureResourceInfoKHR dstPictureResource;
+    public void* pSetupReferenceSlot;
+    public uint referenceSlotCount;
+    public void* pReferenceSlots;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct VkVideoEncodeInfoKHR
+{
+    public StructureType sType;
+    public void* pNext;
+    public uint flags;
+    public Silk.NET.Vulkan.Buffer dstBuffer;
+    public ulong dstBufferOffset;
+    public ulong dstBufferRange;
+    public VkVideoPictureResourceInfoKHR srcPictureResource;
+    public void* pSetupReferenceSlot;
+    public uint referenceSlotCount;
+    public void* pReferenceSlots;
+    public uint precedingExternallyEncodedBytes;
 }
 
 [StructLayout(LayoutKind.Sequential)]

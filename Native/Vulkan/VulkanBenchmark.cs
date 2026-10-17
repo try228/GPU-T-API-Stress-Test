@@ -53,7 +53,8 @@ public unsafe struct VkPhysicalDeviceShaderFloat8FeaturesEXT
 }
 
 /// <summary>
-/// Execution orchestrator for Vulkan compute, Hardware Ray Tracing, and Graphics (ROP / Depth) stress testing.
+/// Execution orchestrator for Vulkan compute, Hardware Ray Tracing, Graphics (ROP / Depth),
+/// and Hardware Video (VCN / NVDEC / QuickSync) stress testing.
 /// Adaptive to physical silicon architecture, memory hierarchy, and Vulkan 1.0 specifications.
 /// </summary>
 public sealed unsafe class VulkanStressBenchmark : IDisposable
@@ -97,6 +98,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private Queue _computeQueue;
     private uint _computeQueueFamilyIndex;
 
+    private uint _videoDecodeQueueFamilyIndex = uint.MaxValue;
+    private uint _videoEncodeQueueFamilyIndex = uint.MaxValue;
+    private Queue _videoDecodeQueue;
+    private Queue _videoEncodeQueue;
+
     private string _deviceName = "Vulkan GPU";
     private readonly object _queueLock = new();
 
@@ -134,6 +140,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private VulkanTestRegistry _testRegistry = null!;
     private VulkanRtManager? _rtManager;
     private VulkanGraphicsManager? _graphicsManager;
+    private VulkanVideoManager? _videoManager;
 
     private CancellationTokenSource? _computeCts;
     private Thread? _computeThread;
@@ -181,7 +188,16 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         ["rt_ser"]       = new("rt_ser",       VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
         ["rt_omm"]       = new("rt_omm",       VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
         ["rt_pos"]       = new("rt_pos",       VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
-        ["rt_nv"]        = new("rt_nv",        VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY")
+        ["rt_nv"]        = new("rt_nv",        VulkanShaders.RT_RAYS_PER_INVOCATION,     "RAY"),
+
+        // Vulkan Video Workloads
+        ["vid_dec_av1"]  = new("vid_dec_av1",  1.0, "FRAME"),
+        ["vid_dec_hevc"] = new("vid_dec_hevc", 1.0, "FRAME"),
+        ["vid_dec_h264"] = new("vid_dec_h264", 1.0, "FRAME"),
+        ["vid_dec_vp9"]  = new("vid_dec_vp9",  1.0, "FRAME"),
+        ["vid_enc_av1"]  = new("vid_enc_av1",  1.0, "FRAME"),
+        ["vid_enc_hevc"] = new("vid_enc_hevc", 1.0, "FRAME"),
+        ["vid_enc_h264"] = new("vid_enc_h264", 1.0, "FRAME")
     };
 
     private static int GetBatchCount(string id) => id switch
@@ -195,6 +211,8 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         "rop_rgba8" or "rop_rgba16f" or "rop_rgba32f" or "rop_blend" or "rop_msaa" => 64,
         "rop_mrt2" or "rop_mrt4" or "rop_mrt8" => 32,
         "ds_test" or "ds_write" or "ds_earlyz" or "ds_hiz" or "ds_stencil" => 64,
+        "vid_dec_av1" or "vid_dec_hevc" or "vid_dec_h264" or "vid_dec_vp9"
+            or "vid_enc_av1" or "vid_enc_hevc" or "vid_enc_h264" => VulkanVideoManager.FramesPerBatch,
         "mem_l1l2" => 256,
         "mem_l3"   => 128,
         "mem_bw"   => 64,
@@ -204,6 +222,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
     private bool HasPipelineFor(string id)
     {
+        if (id.StartsWith("vid_"))
+        {
+            return _videoManager != null && _videoManager.IsCodecSupported(id);
+        }
+
         if (id.StartsWith("rop_") || id.StartsWith("ds_"))
         {
             return _graphicsManager != null && _graphicsManager.HasPipeline(id);
@@ -225,9 +248,6 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Dynamically resolves the active pipeline based on runtime UI switches, modifiers, and silicon support.
-    /// </summary>
     private Pipeline ResolvePipeline(string testId)
     {
         if (testId == "rt_query")
@@ -431,6 +451,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _testRegistry = new VulkanTestRegistry(_capabilityProbe);
         _deviceName = _capabilityProbe.DeviceName;
 
+        // Query physical dedicated device-local VRAM
         PhysicalDeviceMemoryProperties memProps;
         _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
         ulong maxLocalHeap = 0;
@@ -462,6 +483,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         uint threadsNeeded = halfSweepBytes / 128u;
         _wgVramBus = (threadsNeeded + 63u) / 64u;
 
+        // Discover Compute, Graphics, and Video queue families
         uint qfCount = 0;
         _vk.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &qfCount, null);
         QueueFamilyProperties* pQf = stackalloc QueueFamilyProperties[(int)qfCount];
@@ -483,7 +505,16 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         _computeQueueFamilyIndex = (uint)bestQueue;
 
-        // 1. Create Logical Device with Ray Tracing & BDA Features Chained
+        for (uint i = 0; i < qfCount; i++)
+        {
+            var flags = pQf[i].QueueFlags;
+            if (((uint)flags & 0x00000020) != 0 && _videoDecodeQueueFamilyIndex == uint.MaxValue)
+                _videoDecodeQueueFamilyIndex = i;
+            if (((uint)flags & 0x00000040) != 0 && _videoEncodeQueueFamilyIndex == uint.MaxValue)
+                _videoEncodeQueueFamilyIndex = i;
+        }
+
+        // 1. Create Logical Device with Ray Tracing, BDA, and Video queues
         InitializeLogicalDevice();
 
         // 2. Allocate SSBO Buffer Memory
@@ -526,7 +557,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _vk.AllocateMemory(_device, &allocInfo, null, out _ssboMemory);
         _vk.BindBufferMemory(_device, _ssboBuffer, _ssboMemory, 0);
 
-        // 3. Create Command Pool & Fences early
+        // 3. Create Command Pool & Fences
         CommandPoolCreateInfo cpInfo = new()
         {
             SType = StructureType.CommandPoolCreateInfo,
@@ -543,7 +574,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             _vk.CreateFence(_device, &fenceInfo, null, out _inFlightFences[i]);
         }
 
-        // 4. Initialize Hardware Acceleration Structure Manager (before creating Descriptor Set Layout)
+        // 4. Initialize Hardware Acceleration Structure Manager
         bool hasAs = false;
         if (_capabilityProbe.HasAccelerationStructure && _capabilityProbe.IsExtensionSupported("VK_KHR_acceleration_structure"))
         {
@@ -551,11 +582,24 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             hasAs = _rtManager.Initialize();
         }
 
-        // Initialize Graphics Manager for ROP & Depth/Stencil benchmarks
+        // 5. Initialize Graphics Manager (ROP & Depth/Stencil)
         _graphicsManager = new VulkanGraphicsManager(_vk, _device, _physicalDevice, _computeQueue, _cmdPool, memProps);
         _graphicsManager.Initialize();
 
-        // 5. Create Descriptor Set Layout (3 SSBO + 4 TMU + 1 TLAS if supported and built)
+        // 6. Initialize Video Manager (Hardware Codecs)
+        _videoManager = new VulkanVideoManager(
+            _vk, _instance, _device, _physicalDevice,
+            _videoDecodeQueueFamilyIndex, _videoDecodeQueue,
+            _videoEncodeQueueFamilyIndex, _videoEncodeQueue,
+            memProps,
+            _capabilityProbe);
+        if (!_videoManager.Initialize())
+        {
+            _videoManager.Dispose();
+            _videoManager = null;
+        }
+
+        // 7. Create Descriptor Set Layout
         uint totalBindings = hasAs ? 8u : 7u;
 
         DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[(int)totalBindings];
@@ -585,7 +629,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             bindings[7] = new()
             {
                 Binding = 7,
-                DescriptorType = (DescriptorType)1000150000, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+                DescriptorType = (DescriptorType)1000150000,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.ComputeBit
             };
@@ -612,7 +656,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         _vk.CreatePipelineLayout(_device, &plInfo, null, out _pipeLayout);
 
-        // 6. Create Descriptor Pool
+        // 8. Create Descriptor Pool
         uint poolCount = hasAs ? 3u : 2u;
         DescriptorPoolSize* poolSizes = stackalloc DescriptorPoolSize[(int)poolCount];
         poolSizes[0] = new() { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 };
@@ -647,7 +691,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             _vk.AllocateDescriptorSets(_device, &dsAlloc, pSet);
         }
 
-        // 7. Write SSBO Descriptors (Bindings 0..2)
+        // 9. Write SSBO Descriptors
         nuint halfRange = allocBufferSize / 2;
         DescriptorBufferInfo* descBufInfos = stackalloc DescriptorBufferInfo[3];
         descBufInfos[0] = new() { Buffer = _ssboBuffer, Offset = 0, Range = allocBufferSize };
@@ -671,10 +715,10 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         _vk.UpdateDescriptorSets(_device, 3, writeDs, 0, null);
 
-        // 8. Initialize Textures (Bindings 3..6)
+        // 10. Initialize Textures
         InitializeTmuResources(memProps);
 
-        // 9. Write Acceleration Structure Descriptor (Binding 7)
+        // 11. Write Acceleration Structure Descriptor
         if (hasAs && _rtManager != null && _rtManager.IsInitialized)
         {
             var tlasHandle = _rtManager.Tlas;
@@ -699,14 +743,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             _vk.UpdateDescriptorSets(_device, 1, &write, 0, null);
         }
 
-        // 10. Register Compute & Ray Tracing Pipelines
+        // 12. Register Pipelines
         InitializePipelines();
         InitializeBufferOnGpu();
     }
 
-    /// <summary>
-    /// Configures device extensions and physical device features including Hardware Ray Tracing, then creates the VkDevice handle.
-    /// </summary>
     private void InitializeLogicalDevice()
     {
         List<string> devExtensions = new();
@@ -724,7 +765,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             devExtensions.Add("VK_EXT_subgroup_size_control");
         }
 
-        // Buffer Device Address (Required by KHR RT / Acceleration Structure)
+        // Buffer Device Address
         VkPhysicalDeviceBufferDeviceAddressFeaturesKHR bdaFeatures = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_buffer_device_address"))
         {
@@ -749,7 +790,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 devExtensions.Add("VK_KHR_deferred_host_operations");
         }
 
-        // Ray Query (Inline HW RT)
+        // Ray Query
         VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_ray_query") && _capabilityProbe.HasRayQuery)
         {
@@ -771,7 +812,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             devExtensions.Add("VK_KHR_ray_tracing_pipeline");
         }
 
-        // Shader Execution Reordering (SER)
+        // SER
         VkPhysicalDeviceRayTracingInvocationReorderFeaturesNV serFeatures = default;
         if (_capabilityProbe.HasSER)
         {
@@ -786,7 +827,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 devExtensions.Add("VK_NV_ray_tracing_invocation_reorder");
         }
 
-        // Opacity Micromap (OMM)
+        // OMM
         VkPhysicalDeviceOpacityMicromapFeaturesEXT ommFeatures = default;
         if (_capabilityProbe.HasOMM)
         {
@@ -801,7 +842,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 devExtensions.Add("VK_KHR_opacity_micromap");
         }
 
-        // Ray Tracing Position Fetch
+        // Position Fetch
         VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR posFeatures = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_ray_tracing_position_fetch") && _capabilityProbe.HasRTPositionFetch)
         {
@@ -812,19 +853,36 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             devExtensions.Add("VK_KHR_ray_tracing_position_fetch");
         }
 
-        // Legacy NVIDIA Ray Tracing (2018)
+        // Legacy NV Ray Tracing
         if (_capabilityProbe.IsExtensionSupported("VK_NV_ray_tracing") && _capabilityProbe.HasNVRayTracing)
         {
             devExtensions.Add("VK_NV_ray_tracing");
         }
 
-        // SPIR-V 1.4 Optional Driver Activation
+        // SPIR-V 1.4
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_spirv_1_4"))
         {
             devExtensions.Add("VK_KHR_spirv_1_4");
             if (_capabilityProbe.IsExtensionSupported("VK_KHR_shader_float_controls"))
                 devExtensions.Add("VK_KHR_shader_float_controls");
         }
+
+        // Vulkan Video Core & Codec Extensions
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_queue"))
+            devExtensions.Add("VK_KHR_video_queue");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_decode_queue"))
+            devExtensions.Add("VK_KHR_video_decode_queue");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_encode_queue"))
+            devExtensions.Add("VK_KHR_video_encode_queue");
+
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_decode_h264")) devExtensions.Add("VK_KHR_video_decode_h264");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_decode_h265")) devExtensions.Add("VK_KHR_video_decode_h265");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_decode_av1"))  devExtensions.Add("VK_KHR_video_decode_av1");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_decode_vp9"))  devExtensions.Add("VK_KHR_video_decode_vp9");
+
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_encode_h264")) devExtensions.Add("VK_KHR_video_encode_h264");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_encode_h265")) devExtensions.Add("VK_KHR_video_encode_h265");
+        if (_capabilityProbe.IsExtensionSupported("VK_KHR_video_encode_av1"))  devExtensions.Add("VK_KHR_video_encode_av1");
 
         // 16-Bit Storage
         VkPhysicalDevice16BitStorageFeaturesKHR storage16 = default;
@@ -921,7 +979,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             devExtensions.Add("VK_KHR_vulkan_memory_model");
         }
 
-        // BFloat16 Hardware Arithmetic
+        // BFloat16
         VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16Features = default;
         if (_capabilityProbe.IsExtensionSupported("VK_KHR_shader_bfloat16"))
         {
@@ -934,7 +992,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             devExtensions.Add("VK_KHR_shader_bfloat16");
         }
 
-        // Float8 Hardware Types
+        // Float8
         VkPhysicalDeviceShaderFloat8FeaturesEXT fp8Features = default;
         if (_capabilityProbe.IsExtensionSupported("VK_EXT_shader_float8"))
         {
@@ -959,22 +1017,32 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         for (int i = 0; i < devExtensions.Count; i++)
             ppDevExts[i] = (byte*)SilkMarshal.StringToPtr(devExtensions[i]);
 
-        float qPri = 1.0f;
-        DeviceQueueCreateInfo qInfo = new()
+        List<uint> qFamilies = new() { _computeQueueFamilyIndex };
+        if (_videoDecodeQueueFamilyIndex != uint.MaxValue && !qFamilies.Contains(_videoDecodeQueueFamilyIndex))
+            qFamilies.Add(_videoDecodeQueueFamilyIndex);
+        if (_videoEncodeQueueFamilyIndex != uint.MaxValue && !qFamilies.Contains(_videoEncodeQueueFamilyIndex))
+            qFamilies.Add(_videoEncodeQueueFamilyIndex);
+
+        DeviceQueueCreateInfo* pQInfos = stackalloc DeviceQueueCreateInfo[qFamilies.Count];
+        float* pPriorities = stackalloc float[qFamilies.Count];
+        for (int q = 0; q < qFamilies.Count; q++)
         {
-            SType = StructureType.DeviceQueueCreateInfo,
-            PNext = null,
-            QueueFamilyIndex = _computeQueueFamilyIndex,
-            QueueCount = 1,
-            PQueuePriorities = &qPri
-        };
+            pPriorities[q] = 1.0f;
+            pQInfos[q] = new DeviceQueueCreateInfo
+            {
+                SType = StructureType.DeviceQueueCreateInfo,
+                QueueFamilyIndex = qFamilies[q],
+                QueueCount = 1,
+                PQueuePriorities = &pPriorities[q]
+            };
+        }
 
         DeviceCreateInfo devInfo = new()
         {
             SType = StructureType.DeviceCreateInfo,
             PNext = &feat2,
-            QueueCreateInfoCount = 1,
-            PQueueCreateInfos = &qInfo,
+            QueueCreateInfoCount = (uint)qFamilies.Count,
+            PQueueCreateInfos = pQInfos,
             EnabledExtensionCount = (uint)devExtensions.Count,
             PpEnabledExtensionNames = devExtensions.Count > 0 ? ppDevExts : null,
             PEnabledFeatures = null
@@ -988,6 +1056,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             SilkMarshal.Free((nint)ppDevExts[i]);
 
         _vk.GetDeviceQueue(_device, _computeQueueFamilyIndex, 0, out _computeQueue);
+
+        if (_videoDecodeQueueFamilyIndex != uint.MaxValue)
+            _vk.GetDeviceQueue(_device, _videoDecodeQueueFamilyIndex, 0, out _videoDecodeQueue);
+        if (_videoEncodeQueueFamilyIndex != uint.MaxValue)
+            _vk.GetDeviceQueue(_device, _videoEncodeQueueFamilyIndex, 0, out _videoEncodeQueue);
     }
 
     private void InitializeTmuResources(PhysicalDeviceMemoryProperties memProps)
@@ -1255,12 +1328,9 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         }
     }
 
-    /// <summary>
-    /// Compiles and registers all compute pipeline variants across ALU, Ray Tracing, Matrix, and Memory domains.
-    /// </summary>
     private void InitializePipelines()
     {
-        // 1. ALU Compute Pipelines (SPIR-V 1.0)
+        // 1. ALU Compute Pipelines
         SafeRegisterPipeline("alu_fp32", VulkanShaders.GetShaderFP32());
         SafeRegisterPipeline("alu_fp16", VulkanShaders.GetShaderFP16(_capabilityProbe));
         SafeRegisterPipeline("alu_bf16", VulkanShaders.GetShaderBF16(_capabilityProbe));
@@ -1278,7 +1348,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 SafeRegisterPipeline("alu_dp2a", VulkanShaders.GetShaderDP2A(_capabilityProbe));
         }
 
-        // 2. Hardware Ray Tracing Pipelines (SPIR-V 1.4 / Extension-Accelerated)
+        // 2. Hardware Ray Tracing Pipelines
         if (_capabilityProbe.HasRayQuery)
         {
             SafeRegisterPipeline("rt_query",     VulkanShaders.GetShaderRtQuery(_capabilityProbe));
@@ -1406,6 +1476,8 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         foreach (var testId in _activeTestSnapshot)
         {
+            if (testId.StartsWith("vid_")) continue;
+
             if (!_testCmdBuffers.TryGetValue(testId, out var buffers))
             {
                 buffers = new CommandBuffer[InFlightFrames];
@@ -1425,7 +1497,6 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
             int batch = GetBatchCount(testId);
 
-            // Handle Graphics Pipeline draws for ROP and Depth/Stencil
             if (testId.StartsWith("rop_") || testId.StartsWith("ds_"))
             {
                 if (_graphicsManager != null && _graphicsManager.HasPipeline(testId))
@@ -1440,7 +1511,6 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 continue;
             }
 
-            // Handle Compute Pipeline dispatches
             Pipeline pipe = ResolvePipeline(testId);
             if (pipe.Handle == 0) continue;
 
@@ -1514,6 +1584,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 var currentTests = _activeTestSnapshot;
                 if (!_isBenchmarking || currentTests.Length == 0)
                 {
+                    _videoManager?.StopBurner();
                     Thread.Sleep(10);
                     Array.Clear(frameTestId);
                     burstCounter = 0;
@@ -1524,7 +1595,12 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 lock (_queueLock)
                 {
                     var fence = _inFlightFences[frameIndex];
-                    _vk.WaitForFences(_device, 1, &fence, true, ulong.MaxValue);
+                    // Таймаут 100 мс предотвращает вечный дедлок потоков
+                    Result waitRes = _vk.WaitForFences(_device, 1, &fence, true, 100_000_000);
+                    if (waitRes == Result.Timeout)
+                    {
+                        continue;
+                    }
                     _vk.ResetFences(_device, 1, &fence);
 
                     long now = Stopwatch.GetTimestamp();
@@ -1563,7 +1639,15 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                             testIdx++;
                         }
 
-                        if (_testCmdBuffers.TryGetValue(nextTest, out var cbs))
+                        if (nextTest.StartsWith("vid_") && _videoManager != null && _videoManager.IsCodecSupported(nextTest))
+                        {
+                            frameTestId[frameIndex] = nextTest;
+                            frameSubmitTimestamp[frameIndex] = Stopwatch.GetTimestamp();
+                            // Передаем in-flight fence для честной синхронизации двух кадров в полете
+                            _videoManager.ExecuteVideoPass(nextTest, fence, frameIndex);
+                            Interlocked.Add(ref _totalCompletedDispatches, (ulong)VulkanVideoManager.FramesPerBatch);
+                        }
+                        else if (_testCmdBuffers.TryGetValue(nextTest, out var cbs))
                         {
                             var scb = cbs[frameIndex];
                             SubmitInfo stressSubmit = new()
@@ -1730,19 +1814,19 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             double matBf16Tops = _testRegistry.IsActive("mat_bf16") ? GetWorkloadTops("mat_bf16", GetDps("mat_bf16")) : 0.0;
             double matInt8Tops = _testRegistry.IsActive("mat_int8") ? GetWorkloadTops("mat_int8", GetDps("mat_int8")) : 0.0;
 
-            // Hardware Ray Tracing Metrics (MRays/s)
+            // Hardware Ray Tracing Metrics
             double rtMRaysSec = 0.0;
             if (_testRegistry.IsActive("rt_query")) rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_query", GetDps("rt_query")));
             if (_testRegistry.IsActive("rt_pipe"))  rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_pipe", GetDps("rt_pipe")));
             if (_testRegistry.IsActive("rt_nv"))    rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_nv", GetDps("rt_nv")));
 
-            // ROP & Fillrate Metrics (GPixels/s & GBlends/s)
+            // ROP & Fillrate Metrics
             double GetRopFillrate(string id, int targetMultiplier = 1)
-{
-    double testDps = GetDps(id);
-    if (testDps <= 0.0) return 0.0;
-    return (testDps * VulkanGraphicsManager.PixelsPerDraw * targetMultiplier) / 1e9;
-}
+            {
+                double testDps = GetDps(id);
+                if (testDps <= 0.0) return 0.0;
+                return (testDps * VulkanGraphicsManager.PixelsPerDraw * targetMultiplier) / 1e9;
+            }
 
             double ropFillrateGpix = 0.0;
             if (_testRegistry.IsActive("rop_rgba8"))   ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_rgba8", 1));
@@ -1755,13 +1839,32 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
             double ropBlendGblends = _testRegistry.IsActive("rop_blend") ? GetRopFillrate("rop_blend", 1) : 0.0;
 
-            // Depth & Stencil Throughput Metrics (GPixels/s)
+            // Depth & Stencil Throughput Metrics
             double dsRateGpix = 0.0;
             if (_testRegistry.IsActive("ds_test"))    dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_test", 1));
             if (_testRegistry.IsActive("ds_write"))   dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_write", 1));
             if (_testRegistry.IsActive("ds_earlyz"))  dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_earlyz", 1));
             if (_testRegistry.IsActive("ds_hiz"))     dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_hiz", 1));
             if (_testRegistry.IsActive("ds_stencil")) dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_stencil", 1));
+
+            // Hardware Video Decoder & Encoder Metrics (FPS)
+            double GetVideoFps(string id)
+            {
+                if (!_isBenchmarking) return 0.0;
+                lock (_liveTestDps)
+                {
+                    return _liveTestDps.TryGetValue(id, out double d) ? d : 0.0;
+                }
+            }
+
+            double videoFps = 0.0;
+            if (_testRegistry.IsActive("vid_dec_av1"))  videoFps = Math.Max(videoFps, GetVideoFps("vid_dec_av1"));
+            if (_testRegistry.IsActive("vid_dec_hevc")) videoFps = Math.Max(videoFps, GetVideoFps("vid_dec_hevc"));
+            if (_testRegistry.IsActive("vid_dec_h264")) videoFps = Math.Max(videoFps, GetVideoFps("vid_dec_h264"));
+            if (_testRegistry.IsActive("vid_dec_vp9"))  videoFps = Math.Max(videoFps, GetVideoFps("vid_dec_vp9"));
+            if (_testRegistry.IsActive("vid_enc_av1"))  videoFps = Math.Max(videoFps, GetVideoFps("vid_enc_av1"));
+            if (_testRegistry.IsActive("vid_enc_hevc")) videoFps = Math.Max(videoFps, GetVideoFps("vid_enc_hevc"));
+            if (_testRegistry.IsActive("vid_enc_h264")) videoFps = Math.Max(videoFps, GetVideoFps("vid_enc_h264"));
 
             // Memory Hierarchy Metrics
             const double l2BytesPerGroup = 64.0 * 544.0;
@@ -1796,13 +1899,14 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             {
                 PixelUiEngine.Render(
                     pUi, WinWidth, WinHeight,
-                    "Vulkan 1.0 RT & Compute", _deviceName, _isBenchmarking, _targetDurationSec,
+                    "Vulkan 1.0 Stress Test", _deviceName, _isBenchmarking, _targetDurationSec,
                     _customInputBuffer, _isCustomFocused, elapsed, totalActiveDps, 0.0, null, ThemePalette.Vulkan,
                     _mouseX, _mouseY, animTime, _isSettingsOpen, _testRegistry,
                     fp32Tflops, fp64Tflops, fp16Tflops, bf16Tflops, int32Tiops, int64Tiops, int16Tiops, int8Tiops,
                     dp2aTops, dp4aTops, tmuGtexels, memBandwidthGbs, cacheL1L2Tbs, cacheL3Tbs, latencyNs,
                     matFp16Tops, matBf16Tops, matInt8Tops, rtMRaysSec,
-                    ropFillrateGpix, ropBlendGblends, dsRateGpix);
+                    ropFillrateGpix, ropBlendGblends, dsRateGpix,
+                    videoFps);
 
                 gl.ActiveTexture(TextureUnit.Texture0);
                 gl.BindTexture(TextureTarget.Texture2D, uiTexture);
@@ -1838,9 +1942,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     {
         _isBenchmarking = false;
         _benchTimer.Stop();
+        _videoManager?.StopBurner();
+
         lock (_queueLock)
         {
-            if (_device.Handle != 0) _vk.QueueWaitIdle(_computeQueue);
+            if (_device.Handle != 0) _vk.DeviceWaitIdle(_device);
             _liveTestDps.Clear();
             _smoothedDps = 0.0;
         }
@@ -1919,6 +2025,9 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 if (pipeEntry.Module.Handle != 0) _vk.DestroyShaderModule(_device, pipeEntry.Module, null);
             }
             _pipelines.Clear();
+
+            _videoManager?.Dispose();
+            _videoManager = null;
 
             _graphicsManager?.Dispose();
             _graphicsManager = null;
