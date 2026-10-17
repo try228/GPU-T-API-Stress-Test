@@ -113,9 +113,6 @@ public static class PixelUiEngine
         GlyphTable['<'] = [0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00];
     }
 
-    /// <summary>
-    /// Formats raw GPU device names, trimming extraneous marketing identifiers.
-    /// </summary>
     public static string FormatGpuName(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Generic GPU";
@@ -158,7 +155,10 @@ public static class PixelUiEngine
         double matFp16Tops = 0.0,
         double matBf16Tops = 0.0,
         double matInt8Tops = 0.0,
-        double rtMRaysSec = 0.0)
+        double rtMRaysSec = 0.0,
+        double ropFillrateGpix = 0.0,
+        double ropBlendGblends = 0.0,
+        double dsRateGpix = 0.0)
     {
         RenderGpuZBackground(buffer, width, height, isBenchmarking ? animTime : 0.0f, isBenchmarking, theme);
 
@@ -206,19 +206,24 @@ public static class PixelUiEngine
         }
 
         // Telemetry HUD Panel
-        int hudY = 330, hudH = 195;
+        int hudY = 320, hudH = 205;
         FillRectAlpha(buffer, width, 35, hudY, 830, hudH, 0xEE0D1117);
         DrawRect(buffer, width, 35, hudY, 830, hudH, isBenchmarking ? accentColor : 0xFF30363D);
 
         string durStr = durationSec == 0 ? $"{elapsedSec:F1}s / Unlimited" : $"{elapsedSec:F1}s / {durationSec}s";
         DrawString(buffer, width, 50, hudY + 8, $"BENCHMARK TIME: {durStr}   •   TOTAL DISPATCH RATE: {dps:F0} Dispatches/s", 0xFFF0F6FC, 1);
 
-        int currentY = hudY + 26;
+        int currentY = hudY + 24;
         bool hasGranularCompute = registry != null && registry.HasActiveTests();
         bool hasGranularMemory = (cacheL1L2Tbs > 0 || cacheL3Tbs > 0 || memBwGbs > 0 || latencyNs > 0);
         bool hasRtActive = (registry != null && (registry.IsActive("rt_query") || registry.IsActive("rt_pipe") || registry.IsActive("rt_nv"))) || rtMRaysSec > 0;
+        bool hasRopActive = (registry != null && (registry.IsActive("rop_rgba8") || registry.IsActive("rop_rgba16f") || registry.IsActive("rop_rgba32f") ||
+                             registry.IsActive("rop_mrt2") || registry.IsActive("rop_mrt4") || registry.IsActive("rop_mrt8") ||
+                             registry.IsActive("rop_blend") || registry.IsActive("rop_msaa"))) || ropFillrateGpix > 0 || ropBlendGblends > 0;
+        bool hasDsActive = (registry != null && (registry.IsActive("ds_test") || registry.IsActive("ds_write") || registry.IsActive("ds_earlyz") ||
+                            registry.IsActive("ds_hiz") || registry.IsActive("ds_stencil"))) || dsRateGpix > 0;
 
-        if (hasGranularCompute || hasGranularMemory || hasRtActive)
+        if (hasGranularCompute || hasGranularMemory || hasRtActive || hasRopActive || hasDsActive)
         {
             // 1. ALU Floats
             List<string> floatList = new();
@@ -249,23 +254,51 @@ public static class PixelUiEngine
             if (registry != null && registry.IsActive("mat_int64"))                 tensorList.Add("INT64: ENGAGED");
             DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "TENSOR & AI  |   ", tensorList, isBenchmarking ? 0xFFFF8A65 : 0xFF8B949E);
 
-// 4. Ray Tracing Execution Units
-if (hasRtActive)
-{
-    List<string> rtList = new();
-    if (registry != null && registry.IsActive("rt_query"))      rtList.Add("QUERY: INLINE");
-    else if (registry != null && registry.IsActive("rt_pipe"))  rtList.Add("PIPELINE: HW");
-    else if (registry != null && registry.IsActive("rt_nv"))    rtList.Add("LEGACY NV: ON");
+            // 4. Ray Tracing Execution Units
+            if (hasRtActive)
+            {
+                List<string> rtList = new();
+                if (registry != null && registry.IsActive("rt_query"))      rtList.Add("QUERY: INLINE");
+                else if (registry != null && registry.IsActive("rt_pipe"))  rtList.Add("PIPELINE: HW");
+                else if (registry != null && registry.IsActive("rt_nv"))    rtList.Add("LEGACY NV: ON");
 
-    if (registry != null && registry.IsActive("rt_ser"))   rtList.Add("SER: ON");
-    if (registry != null && registry.IsActive("rt_omm"))   rtList.Add("OMM: ON");
-    if (registry != null && registry.IsActive("rt_pos"))   rtList.Add("POS_FETCH: ON");
+                if (registry != null && registry.IsActive("rt_ser"))   rtList.Add("SER: ON");
+                if (registry != null && registry.IsActive("rt_omm"))   rtList.Add("OMM: ON");
+                if (registry != null && registry.IsActive("rt_pos"))   rtList.Add("POS_FETCH: ON");
+                rtList.Add($"TRAVERSAL: {rtMRaysSec:F1} MRays/s");
+                DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "RAY TRACING  |   ", rtList, isBenchmarking ? 0xFFFF7043 : 0xFF8B949E);
+            }
 
-    rtList.Add($"TRAVERSAL: {rtMRaysSec:F1} MRays/s");
-    DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "RAY TRACING  |   ", rtList, isBenchmarking ? 0xFFFF7043 : 0xFF8B949E);
-}
+            // 5. ROP Color & MRT
+            if (hasRopActive)
+            {
+                List<string> ropList = new();
+                if (registry != null && registry.IsActive("rop_rgba8"))   ropList.Add("RGBA8: ON");
+                if (registry != null && registry.IsActive("rop_rgba16f")) ropList.Add("RGBA16F: ON");
+                if (registry != null && registry.IsActive("rop_rgba32f")) ropList.Add("RGBA32F: ON");
+                if (registry != null && registry.IsActive("rop_mrt2"))    ropList.Add("MRT 2X: ON");
+                if (registry != null && registry.IsActive("rop_mrt4"))    ropList.Add("MRT 4X: ON");
+                if (registry != null && registry.IsActive("rop_mrt8"))    ropList.Add("MRT 8X: ON");
+                if (registry != null && registry.IsActive("rop_msaa"))    ropList.Add("MSAA 8X: ON");
+                if (ropFillrateGpix > 0) ropList.Add($"FILLRATE: {ropFillrateGpix:F1} GPix/s");
+                if (ropBlendGblends > 0) ropList.Add($"BLEND: {ropBlendGblends:F1} GBlends/s");
+                DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "ROP COLOR/MRT|   ", ropList, isBenchmarking ? 0xFFFF5252 : 0xFF8B949E);
+            }
 
-            // 5. TMU Texture Units
+            // 6. Depth & Stencil
+            if (hasDsActive)
+            {
+                List<string> dsList = new();
+                if (registry != null && registry.IsActive("ds_test"))    dsList.Add("Z-READ: ON");
+                if (registry != null && registry.IsActive("ds_write"))   dsList.Add("Z-WRITE: ON");
+                if (registry != null && registry.IsActive("ds_earlyz"))  dsList.Add("EARLY-Z: ON");
+                if (registry != null && registry.IsActive("ds_hiz"))     dsList.Add("HI-Z: ON");
+                if (registry != null && registry.IsActive("ds_stencil")) dsList.Add("STENCIL: ON");
+                if (dsRateGpix > 0) dsList.Add($"RATE: {dsRateGpix:F1} GPix/s");
+                DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "DEPTH/STENCIL|   ", dsList, isBenchmarking ? 0xFFE040FB : 0xFF8B949E);
+            }
+
+            // 7. TMU Texture Units
             bool hasTmu = (registry != null && (registry.IsActive("tmu_bdt") || registry.IsActive("tmu_aniso") || registry.IsActive("tmu_bc") || registry.IsActive("tmu_3d"))) || tmuGtexels > 0;
             if (hasTmu)
             {
@@ -278,7 +311,7 @@ if (hasRtActive)
                 DrawWrappedCategoryLine(buffer, width, 50, ref currentY, "TEXTURE TMU  |   ", tmuList, isBenchmarking ? 0xFF00E5FF : 0xFF8B949E);
             }
 
-            // 6. Memory Hierarchy
+            // 8. Memory Hierarchy
             List<string> memList = new();
             if (registry != null ? registry.IsActive("mem_l1l2") : cacheL1L2Tbs > 0) memList.Add($"L1/L2: {cacheL1L2Tbs:F2} TB/s");
             if (registry != null ? registry.IsActive("mem_l3")   : cacheL3Tbs > 0)   memList.Add($"L3: {cacheL3Tbs:F2} TB/s");
@@ -300,15 +333,15 @@ if (hasRtActive)
         }
 
         string activeStatus = registry != null
-            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Workloads Engaged   •   Direct Vulkan 1.0 (SPIR-V 1.0/1.3/1.4)"
+            ? $"ACTIVE ENG.  |   {registry.GetActiveCount()} Workloads Engaged   •   Direct Vulkan 1.0 (Compute & Graphics)"
             : "PIPELINE STATUS: Direct Native Vulkan 1.0 Execution";
-        DrawString(buffer, width, 50, Math.Min(currentY + 2, hudY + 154), activeStatus, accentColor, 1);
+        DrawString(buffer, width, 50, Math.Min(currentY + 2, hudY + 168), activeStatus, accentColor, 1);
 
         if (durationSec > 0 && isBenchmarking)
         {
             float progress = Math.Clamp((float)(elapsedSec / durationSec), 0f, 1f);
-            FillRectAlpha(buffer, width, 50, hudY + 174, 800, 6, 0xFF21262D);
-            FillRectAlpha(buffer, width, 50, hudY + 174, (int)(800 * progress), 6, accentColor);
+            FillRectAlpha(buffer, width, 50, hudY + 188, 800, 6, 0xFF21262D);
+            FillRectAlpha(buffer, width, 50, hudY + 188, (int)(800 * progress), 6, accentColor);
         }
 
         DrawString(buffer, width, 35, 532, registry != null
@@ -328,7 +361,7 @@ if (hasRtActive)
         if (items.Count == 0)
         {
             DrawString(buffer, bufW, startX, currentY, $"{prefix}STANDBY", textColor, 1);
-            currentY += 14;
+            currentY += 13;
             return;
         }
 
@@ -349,7 +382,7 @@ if (hasRtActive)
             {
                 string lineToDraw = isFirstLine ? $"{prefix}{curLine}" : $"{indent}{curLine}";
                 DrawString(buffer, bufW, startX, currentY, lineToDraw, textColor, 1);
-                currentY += 13;
+                currentY += 12;
                 isFirstLine = false;
                 curLine = item;
             }
@@ -363,7 +396,7 @@ if (hasRtActive)
         {
             string lineToDraw = isFirstLine ? $"{prefix}{curLine}" : $"{indent}{curLine}";
             DrawString(buffer, bufW, startX, currentY, lineToDraw, textColor, 1);
-            currentY += 14;
+            currentY += 13;
         }
     }
 
@@ -401,7 +434,6 @@ if (hasRtActive)
 
         bool isNv1Active = registry.Items.Any(k => k.Id == "mat_mod_nv1" && k.IsChecked);
 
-        // Ray Tracing mutual exclusivity states
         bool isRtNvActive = registry.Items.Any(k => k.Id == "rt_nv" && k.IsChecked);
         bool hasKhrRtChecked = registry.Items.Any(k => k.Id is "rt_query" or "rt_pipe" or "rt_ser" or "rt_omm" or "rt_pos" && k.IsChecked);
         bool hasRtPipeChecked = registry.Items.Any(k => k.Id == "rt_pipe" && k.IsChecked);
@@ -425,7 +457,6 @@ if (hasRtActive)
 
             bool isBlockedByNv1 = isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64");
 
-            // Evaluate Ray Tracing constraint locks
             bool isBlockedByRt = false;
             string lockReason = "";
 
@@ -473,9 +504,6 @@ if (hasRtActive)
         }
     }
 
-    /// <summary>
-    /// Processes user input clicks inside the matrix configuration modal window.
-    /// </summary>
     public static void HandleSettingsClick(int mouseX, int mouseY, VulkanTestRegistry registry, ref bool isSettingsOpen, bool isBenchmarking = false)
     {
         if (ModalClose.Contains(mouseX, mouseY)) { isSettingsOpen = false; return; }
@@ -514,19 +542,15 @@ if (hasRtActive)
             Rect itemRect = new(mx + 15 + col * colGap, startY + colRows[col] * 15, colWidth, 14);
             if (itemRect.Contains(mouseX, mouseY) && item.IsSupported)
             {
-                // Disallow clicking NV2 or incompatible formats while NV1 is active
                 if (isNv1Active && (item.Id == "mat_mod_nv2" || item.Id is "mat_bf16" or "mat_fp8_e4m3" or "mat_fp8_e5m2" or "mat_int4" or "mat_fp64" or "mat_int64"))
                     return;
 
-                // Disallow invalid Ray Tracing combinations
                 if (item.Id == "rt_nv" && hasKhrRtChecked) return;
                 if (item.Id is "rt_query" or "rt_pipe" or "rt_ser" or "rt_omm" or "rt_pos" && isRtNvActive) return;
                 if (item.Id == "rt_ser" && !hasRtPipeChecked) return;
                 if (item.Id is "rt_omm" or "rt_pos" && !hasKhrBaseChecked) return;
 
                 item.IsChecked = !item.IsChecked;
-
-                // Sanitize dependent states immediately upon toggle
                 registry.SanitizeAllConflicts();
                 return;
             }

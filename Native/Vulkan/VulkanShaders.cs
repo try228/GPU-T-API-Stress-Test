@@ -3,7 +3,7 @@ using System.Reflection;
 namespace GPU_T.StressTest.Native.Vulkan;
 
 /// <summary>
-/// Hardware compute shader provider loading precompiled SPIR-V 1.0 (ALU, cache, TMU, VRAM)
+/// Hardware compute and graphics shader provider loading precompiled SPIR-V 1.0 (ALU, cache, TMU, ROP, Depth)
 /// and SPIR-V 1.4 (Ray Tracing and Cooperative Matrix) modules.
 /// </summary>
 public static class VulkanShaders
@@ -27,8 +27,8 @@ public static class VulkanShaders
     // TMU Texture units
     public const double TMU_SAMPLES_PER_INVOCATION = 256.0;
 
-    // 32 hardware rays per invocation * 327,680 invocations = 10.48 million real BVH rays per dispatch
-public const double RT_RAYS_PER_INVOCATION = 32.0;
+    // Ray Tracing operations (BVH traversal queries / rays cast per invocation)
+    public const double RT_RAYS_PER_INVOCATION = 32.0;
 
     // Matrix workloads
     public const double MAT_FP32_OPS_PER_INVOCATION = 4096.0;
@@ -59,6 +59,13 @@ public const double RT_RAYS_PER_INVOCATION = 32.0;
     private static uint[]? _spvRtPipe, _spvRtPipeSer, _spvRtPipeOmm, _spvRtPipePos;
     private static uint[]? _spvRtNv;
 
+    // Graphics Shaders (Vertex & Fragment)
+    private static uint[]? _spvVertFullscreen;
+    private static uint[]? _spvFragRopRgba8, _spvFragRopRgba16f, _spvFragRopRgba32f;
+    private static uint[]? _spvFragRopMrt2, _spvFragRopMrt4, _spvFragRopMrt8;
+    private static uint[]? _spvFragRopBlend;
+    private static uint[]? _spvFragDsTest, _spvFragDsEarlyZ, _spvFragDsHiZ;
+
     /// <summary>
     /// Loads aligned 32-bit SPIR-V binary words embedded into the assembly manifest or from build output.
     /// </summary>
@@ -67,7 +74,6 @@ public const double RT_RAYS_PER_INVOCATION = 32.0;
         var assembly = typeof(VulkanShaders).Assembly;
         string resourceName = $"Shaders.{shaderFileName}.spv";
 
-        // 1. Embedded assembly resources
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream != null)
         {
@@ -84,7 +90,6 @@ public const double RT_RAYS_PER_INVOCATION = 32.0;
             return words;
         }
 
-        // 2. Fallback: check obj/spv output directory directly on disk
         string diskPath = Path.Combine("obj", "Debug", "net10.0", "spv", $"{shaderFileName}.spv");
         if (!File.Exists(diskPath))
         {
@@ -154,7 +159,7 @@ public const double RT_RAYS_PER_INVOCATION = 32.0;
     public static uint[]? GetShaderMatINT32(VulkanCapabilityProbe? probe = null)   => _spvMatInt32   ??= LoadSpirv("mat_khr_int32");
     public static uint[]? GetShaderMatINT64(VulkanCapabilityProbe? probe = null)   => _spvMatInt64   ??= LoadSpirv("mat_khr_int64");
 
-    // Ray Tracing Shaders (SPIR-V 1.4 / Extension-Accelerated)
+    // Ray Tracing Shaders
     public static uint[]? GetShaderRtQuery(VulkanCapabilityProbe? probe = null)    => _spvRtQuery    ??= LoadSpirv("rt_query");
     public static uint[]? GetShaderRtQueryOmm(VulkanCapabilityProbe? probe = null) => _spvRtQueryOmm ??= LoadSpirv("rt_query_omm");
     public static uint[]? GetShaderRtQueryPos(VulkanCapabilityProbe? probe = null) => _spvRtQueryPos ??= LoadSpirv("rt_query_pos");
@@ -164,5 +169,18 @@ public const double RT_RAYS_PER_INVOCATION = 32.0;
     public static uint[]? GetShaderRtPipeOmm(VulkanCapabilityProbe? probe = null)  => _spvRtPipeOmm  ??= LoadSpirv("rt_pipe_omm");
     public static uint[]? GetShaderRtPipePos(VulkanCapabilityProbe? probe = null)  => _spvRtPipePos  ??= LoadSpirv("rt_pipe_pos");
 
-    public static uint[]? GetShaderRtNv(VulkanCapabilityProbe? probe = null)        => _spvRtNv       ??= LoadSpirv("rt_nv");
+    public static uint[]? GetShaderRtNv(VulkanCapabilityProbe? probe = null)       => _spvRtNv       ??= LoadSpirv("rt_nv");
+
+    // Graphics Shaders (Vertex & Fragment)
+    public static uint[] GetShaderVertFullscreen() => _spvVertFullscreen ??= LoadSpirv("vert_fullscreen")!;
+    public static uint[] GetShaderFragRopRgba8()    => _spvFragRopRgba8    ??= LoadSpirv("frag_rop_rgba8")!;
+    public static uint[] GetShaderFragRopRgba16f()  => _spvFragRopRgba16f  ??= LoadSpirv("frag_rop_rgba16f")!;
+    public static uint[] GetShaderFragRopRgba32f()  => _spvFragRopRgba32f  ??= LoadSpirv("frag_rop_rgba32f")!;
+    public static uint[] GetShaderFragRopMrt2()     => _spvFragRopMrt2     ??= LoadSpirv("frag_rop_mrt2")!;
+    public static uint[] GetShaderFragRopMrt4()     => _spvFragRopMrt4     ??= LoadSpirv("frag_rop_mrt4")!;
+    public static uint[] GetShaderFragRopMrt8()     => _spvFragRopMrt8     ??= LoadSpirv("frag_rop_mrt8")!;
+    public static uint[] GetShaderFragRopBlend()    => _spvFragRopBlend    ??= LoadSpirv("frag_rop_blend")!;
+    public static uint[] GetShaderFragDsTest()      => _spvFragDsTest      ??= LoadSpirv("frag_ds_test")!;
+    public static uint[] GetShaderFragDsEarlyZ()    => _spvFragDsEarlyZ    ??= LoadSpirv("frag_ds_earlyz")!;
+    public static uint[] GetShaderFragDsHiZ()       => _spvFragDsHiZ       ??= LoadSpirv("frag_ds_hiz")!;
 }

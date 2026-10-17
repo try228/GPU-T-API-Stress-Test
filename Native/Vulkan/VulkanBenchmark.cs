@@ -53,7 +53,7 @@ public unsafe struct VkPhysicalDeviceShaderFloat8FeaturesEXT
 }
 
 /// <summary>
-/// Execution orchestrator for Vulkan compute and hardware Ray Tracing stress testing.
+/// Execution orchestrator for Vulkan compute, Hardware Ray Tracing, and Graphics (ROP / Depth) stress testing.
 /// Adaptive to physical silicon architecture, memory hierarchy, and Vulkan 1.0 specifications.
 /// </summary>
 public sealed unsafe class VulkanStressBenchmark : IDisposable
@@ -133,6 +133,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
     private VulkanCapabilityProbe _capabilityProbe = null!;
     private VulkanTestRegistry _testRegistry = null!;
     private VulkanRtManager? _rtManager;
+    private VulkanGraphicsManager? _graphicsManager;
 
     private CancellationTokenSource? _computeCts;
     private Thread? _computeThread;
@@ -191,6 +192,9 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         "alu_fp64" or "alu_int64" or "mat_fp64" or "mat_int64" or "mat_mod_nv1" or "mat_mod_nv2" => 128,
         "rt_query" or "rt_pipe" or "rt_nv" => 64,
         "tmu_bdt" or "tmu_aniso" or "tmu_bc" or "tmu_3d" => 32,
+        "rop_rgba8" or "rop_rgba16f" or "rop_rgba32f" or "rop_blend" or "rop_msaa" => 64,
+        "rop_mrt2" or "rop_mrt4" or "rop_mrt8" => 32,
+        "ds_test" or "ds_write" or "ds_earlyz" or "ds_hiz" or "ds_stencil" => 64,
         "mem_l1l2" => 256,
         "mem_l3"   => 128,
         "mem_bw"   => 64,
@@ -200,6 +204,11 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
     private bool HasPipelineFor(string id)
     {
+        if (id.StartsWith("rop_") || id.StartsWith("ds_"))
+        {
+            return _graphicsManager != null && _graphicsManager.HasPipeline(id);
+        }
+
         if (id.StartsWith("rt_") && id != "rt_nv")
         {
             if (_rtManager == null || !_rtManager.IsInitialized) return false;
@@ -517,7 +526,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
         _vk.AllocateMemory(_device, &allocInfo, null, out _ssboMemory);
         _vk.BindBufferMemory(_device, _ssboBuffer, _ssboMemory, 0);
 
-        // 3. Create Command Pool & Fences early so RT Manager can execute build commands
+        // 3. Create Command Pool & Fences early
         CommandPoolCreateInfo cpInfo = new()
         {
             SType = StructureType.CommandPoolCreateInfo,
@@ -541,6 +550,10 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             _rtManager = new VulkanRtManager(_vk, _device, _physicalDevice, _computeQueue, _cmdPool, memProps);
             hasAs = _rtManager.Initialize();
         }
+
+        // Initialize Graphics Manager for ROP & Depth/Stencil benchmarks
+        _graphicsManager = new VulkanGraphicsManager(_vk, _device, _physicalDevice, _computeQueue, _cmdPool, memProps);
+        _graphicsManager.Initialize();
 
         // 5. Create Descriptor Set Layout (3 SSBO + 4 TMU + 1 TLAS if supported and built)
         uint totalBindings = hasAs ? 8u : 7u;
@@ -1411,6 +1424,23 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             }
 
             int batch = GetBatchCount(testId);
+
+            // Handle Graphics Pipeline draws for ROP and Depth/Stencil
+            if (testId.StartsWith("rop_") || testId.StartsWith("ds_"))
+            {
+                if (_graphicsManager != null && _graphicsManager.HasPipeline(testId))
+                {
+                    for (int frame = 0; frame < InFlightFrames; frame++)
+                    {
+                        _vk.BeginCommandBuffer(buffers[frame], &cbBegin);
+                        _graphicsManager.RecordGraphicsPass(buffers[frame], testId, batch);
+                        _vk.EndCommandBuffer(buffers[frame]);
+                    }
+                }
+                continue;
+            }
+
+            // Handle Compute Pipeline dispatches
             Pipeline pipe = ResolvePipeline(testId);
             if (pipe.Handle == 0) continue;
 
@@ -1573,7 +1603,7 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
 
         var winOptions = WindowOptions.Default;
         winOptions.Size = new Vector2D<int>(WinWidth, WinHeight);
-        winOptions.Title = "GPU-T Vulkan Compute & Hardware RT Benchmark";
+        winOptions.Title = "GPU-T Vulkan Compute & Graphics Benchmark";
         winOptions.API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 3));
         winOptions.VSync = true;
 
@@ -1706,6 +1736,33 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             if (_testRegistry.IsActive("rt_pipe"))  rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_pipe", GetDps("rt_pipe")));
             if (_testRegistry.IsActive("rt_nv"))    rtMRaysSec = Math.Max(rtMRaysSec, GetWorkloadMRays("rt_nv", GetDps("rt_nv")));
 
+            // ROP & Fillrate Metrics (GPixels/s & GBlends/s)
+            double GetRopFillrate(string id, int targetMultiplier = 1)
+{
+    double testDps = GetDps(id);
+    if (testDps <= 0.0) return 0.0;
+    return (testDps * VulkanGraphicsManager.PixelsPerDraw * targetMultiplier) / 1e9;
+}
+
+            double ropFillrateGpix = 0.0;
+            if (_testRegistry.IsActive("rop_rgba8"))   ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_rgba8", 1));
+            if (_testRegistry.IsActive("rop_rgba16f")) ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_rgba16f", 1));
+            if (_testRegistry.IsActive("rop_rgba32f")) ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_rgba32f", 1));
+            if (_testRegistry.IsActive("rop_mrt2"))    ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_mrt2", 2));
+            if (_testRegistry.IsActive("rop_mrt4"))    ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_mrt4", 4));
+            if (_testRegistry.IsActive("rop_mrt8"))    ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_mrt8", 8));
+            if (_testRegistry.IsActive("rop_msaa"))    ropFillrateGpix = Math.Max(ropFillrateGpix, GetRopFillrate("rop_msaa", 1));
+
+            double ropBlendGblends = _testRegistry.IsActive("rop_blend") ? GetRopFillrate("rop_blend", 1) : 0.0;
+
+            // Depth & Stencil Throughput Metrics (GPixels/s)
+            double dsRateGpix = 0.0;
+            if (_testRegistry.IsActive("ds_test"))    dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_test", 1));
+            if (_testRegistry.IsActive("ds_write"))   dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_write", 1));
+            if (_testRegistry.IsActive("ds_earlyz"))  dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_earlyz", 1));
+            if (_testRegistry.IsActive("ds_hiz"))     dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_hiz", 1));
+            if (_testRegistry.IsActive("ds_stencil")) dsRateGpix = Math.Max(dsRateGpix, GetRopFillrate("ds_stencil", 1));
+
             // Memory Hierarchy Metrics
             const double l2BytesPerGroup = 64.0 * 544.0;
             double cacheL1L2Tbs = (_testRegistry.IsActive("mem_l1l2") && HasPipelineFor("mem_l1l2") && _capabilityProbe.L2CacheSizeBytes > 0)
@@ -1739,12 +1796,13 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
             {
                 PixelUiEngine.Render(
                     pUi, WinWidth, WinHeight,
-                    "Vulkan 1.0 Stress-test", _deviceName, _isBenchmarking, _targetDurationSec,
+                    "Vulkan 1.0 RT & Compute", _deviceName, _isBenchmarking, _targetDurationSec,
                     _customInputBuffer, _isCustomFocused, elapsed, totalActiveDps, 0.0, null, ThemePalette.Vulkan,
                     _mouseX, _mouseY, animTime, _isSettingsOpen, _testRegistry,
                     fp32Tflops, fp64Tflops, fp16Tflops, bf16Tflops, int32Tiops, int64Tiops, int16Tiops, int8Tiops,
                     dp2aTops, dp4aTops, tmuGtexels, memBandwidthGbs, cacheL1L2Tbs, cacheL3Tbs, latencyNs,
-                    matFp16Tops, matBf16Tops, matInt8Tops, rtMRaysSec);
+                    matFp16Tops, matBf16Tops, matInt8Tops, rtMRaysSec,
+                    ropFillrateGpix, ropBlendGblends, dsRateGpix);
 
                 gl.ActiveTexture(TextureUnit.Texture0);
                 gl.BindTexture(TextureTarget.Texture2D, uiTexture);
@@ -1861,6 +1919,9 @@ public sealed unsafe class VulkanStressBenchmark : IDisposable
                 if (pipeEntry.Module.Handle != 0) _vk.DestroyShaderModule(_device, pipeEntry.Module, null);
             }
             _pipelines.Clear();
+
+            _graphicsManager?.Dispose();
+            _graphicsManager = null;
 
             _rtManager?.Dispose();
             _rtManager = null;
