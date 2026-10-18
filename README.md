@@ -68,6 +68,7 @@ The resulting binary will be located at:
 | `-g, --gpu <index\|name>`       | Target GPU by numeric index (`0`, `1`) or vendor/device substring (`amd`, `intel`, `nvidia`).        |
 | `-d, --duration <sec>`          | Test duration in seconds (`0` for unlimited). Default: `0`.                                          |
 | `-m, --mock-gpu <target>`       | Override hardware detection profile: `nvidia` (RTX 5090), `intel` (Arc B580), `rdna3` (RX 7900 GRE), `pascal` (GTX 1080). |
+| `--experimental`                | Enable experimental unfinished backends.                                                             |
 | `--debug`, `-dbg`, `--vk-debug` | Enable Vulkan debug messenger (`VK_EXT_debug_utils`) with colorized console output.                  |
 | `--list-gpus`                   | List detected GPUs and PCI IDs, then exit.                                                           |
 | `-h, --help`                    | Show help and exit.                                                                                  |
@@ -76,6 +77,11 @@ The resulting binary will be located at:
 >
 > ```bash
 > API_backend=vk ./GPU-T.StressTest
+> ```
+>
+> And select unfinished backends via `GPUT_EXPERIMENTAL=1` environment variable:
+> ```bash
+> GPUT_EXPERIMENTAL=1 ./GPU-T.StressTest
 > ```
 >
 > CLI flags override environment variables.
