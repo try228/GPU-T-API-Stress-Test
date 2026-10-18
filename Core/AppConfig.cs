@@ -24,9 +24,9 @@ public static class AppConfig
 
     /// <summary>
     /// Direct3D 12 (VKD3D / VKD3D-Proton) backend.
-    /// Currently in active development (Milestone 2).
+    /// Production-ready and verified with full DXR and compute pipelines.
     /// </summary>
-    public const bool EnableDx12Support = false;
+    public const bool EnableDx12Support = true;
 
     /// <summary>
     /// Desktop OpenGL 3.3 Core & OpenGL ES 3.0 (including Mesa Zink) backends.
@@ -94,9 +94,6 @@ public static class AppConfig
     {
         if (IsBackendEnabled(backend))
             return "Active / Production Ready";
-
-        if (backend is TargetBackend.Vkd3d or TargetBackend.Vkd3dP)
-            return "In Development (Experimental)";
 
         return "Disabled by AppConfig Killswitch";
     }

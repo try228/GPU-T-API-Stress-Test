@@ -72,10 +72,6 @@ public static class Program
             {
                 mockGpu = ParseMockGpuTarget(arg.Substring(arg.IndexOf('=') + 1));
             }
-            else if (arg is "--native-d3d" or "--native-payload" or "-n")
-            {
-                useNativeD3D = true;
-            }
             else if (arg is "--experimental" or "--allow-experimental" or "-exp")
             {
                 allowExperimental = true;
@@ -108,10 +104,10 @@ public static class Program
             enableDebug = true;
         }
 
-        // Default to Vulkan if no backend is specified, since Vulkan is the ready production backend
+        // Default to Vulkan if no backend is specified
         if (string.IsNullOrWhiteSpace(backendStr))
         {
-            backendStr = AppConfig.EnableVulkanSupport ? "vk" : "gl";
+            backendStr = AppConfig.EnableVulkanSupport ? "vk" : "dx12";
         }
 
         try
@@ -124,8 +120,8 @@ public static class Program
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"\n[Agent] Backend '{backend}' is currently disabled by AppConfig killswitch.");
                 Console.WriteLine($"[Agent] Current status: {AppConfig.GetBackendStatus(backend)}");
-                Console.WriteLine("[Agent] In this release, Vulkan is the primary active backend for GPU-T.");
-                Console.WriteLine("[Agent] To force execution for development, pass '--experimental' or set GPUT_EXPERIMENTAL=1.\n");
+                Console.WriteLine("[Agent] In this release, Vulkan and Direct3D 12 (VKD3D) are active and ready for GPU-T.");
+                Console.WriteLine("[Agent] To force execution of experimental backends, pass '--experimental' or set GPUT_EXPERIMENTAL=1.\n");
                 Console.ResetColor();
                 return 1;
             }
@@ -243,13 +239,11 @@ public static class Program
         Console.WriteLine("Usage: GPU-T.StressTest [options]");
         Console.WriteLine("Options:");
         Console.WriteLine("  -b, --backend <api>     Select backend (default: vk)");
-        Console.WriteLine("                            Active / Ready:       vk (Vulkan 1.0/1.3)");
-        Console.WriteLine("                            In Development:      vkd3d_p / dx12 (VKD3D-Proton)");
+        Console.WriteLine("                            Active / Ready:       vk (Vulkan 1.0/1.3), vkd3d_p / dx12 (VKD3D-Proton), vkd3d");
         Console.WriteLine("                            Killswitch Blocked:  gl, gles, zink, cl, cuda, rocm, oapi, dx9, dx11");
         Console.WriteLine("  -g, --gpu <index|name>  Select target GPU device by numeric index (0, 1) or name substring");
         Console.WriteLine("  -d, --duration <sec>    Initial test duration in seconds (0 = unlimited)");
         Console.WriteLine("  -m, --mock-gpu <vendor> Simulate virtual GPU architecture (nvidia, intel, rdna3, pascal)");
-        Console.WriteLine("  -n, --native-d3d        Use lightweight native C payload (d3d_stress_native.exe) instead of managed .NET payload");
         Console.WriteLine("      --experimental      Bypass AppConfig killswitches for testing unfinished backends");
         Console.WriteLine("      --debug, -dbg       Enable Vulkan debug messenger (VK_EXT_debug_utils) callback logging");
         Console.WriteLine("      --list-gpus         Print list of all detected GPU devices and exit");

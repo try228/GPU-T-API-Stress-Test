@@ -21,4 +21,55 @@
     <TrimMode Condition="!$([MSBuild]::IsOSPlatform('Windows'))">full</TrimMode>
   </PropertyGroup>
 
+<!-- Real DirectX 12 Compute & DXR Shaders -->
+  <ItemGroup>
+    <!-- Base ALU, Memory & TMU Workloads (Shader Model 6.2) -->
+    <SlangDx12Shader Include="../../Native/Vulkan/Shaders/init_buffer.slang;
+                             ../../Native/Vulkan/Shaders/ALU/alu_fp32.slang;
+                             ../../Native/Vulkan/Shaders/ALU/alu_fp16.slang;
+                             ../../Native/Vulkan/Shaders/ALU/alu_fp64.slang;
+                             ../../Native/Vulkan/Shaders/ALU/alu_int32.slang;
+                             ../../Native/Vulkan/Shaders/ALU/alu_int64.slang;
+                             ../../Native/Vulkan/Shaders/ALU/alu_int16.slang;
+                             ../../Native/Vulkan/Shaders/Memory/mem_bw.slang;
+                             ../../Native/Vulkan/Shaders/Memory/mem_l2.slang;
+                             ../../Native/Vulkan/Shaders/Memory/mem_l3.slang;
+                             ../../Native/Vulkan/Shaders/Memory/mem_lat.slang;
+                             ../../Native/Vulkan/Shaders/TMU/tmu_bdt.slang;
+                             ../../Native/Vulkan/Shaders/TMU/tmu_aniso.slang;
+                             ../../Native/Vulkan/Shaders/TMU/tmu_bc.slang;
+                             ../../Native/Vulkan/Shaders/TMU/tmu_3d.slang">
+      <Profile>sm_6_2</Profile>
+    </SlangDx12Shader>
+
+    <!-- Ray Tracing Workloads (Shader Model 6.6) -->
+    <SlangDx12Shader Include="../../Native/Vulkan/Shaders/RayTracing/rt_query.slang;
+                             ../../Native/Vulkan/Shaders/RayTracing/rt_pipe.slang;
+                             ../../Native/Vulkan/Shaders/RayTracing/rt_pipe_pos.slang">
+      <Profile>sm_6_6</Profile>
+    </SlangDx12Shader>
+  </ItemGroup>
+
+  <!-- Automatic Shader Build Pipeline for DX12 DXIL -->
+  <Target Name="CompileDx12Shaders" BeforeTargets="AssignTargetPaths;PrepareResources">
+    <PropertyGroup>
+      <DxilOutputDir>$(IntermediateOutputPath)dxil\</DxilOutputDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(DxilOutputDir)" />
+
+    <!-- Compile to DXIL using Slang's DXIL target -->
+    <Exec Command="slangc &quot;%(SlangDx12Shader.Identity)&quot; -target dxil -entry main -stage compute -profile %(SlangDx12Shader.Profile) -o &quot;$(DxilOutputDir)%(SlangDx12Shader.Filename).dxil&quot;"
+          Condition="'@(SlangDx12Shader)' != ''"
+          ContinueOnError="true" />
+
+    <ItemGroup>
+      <_DxilCompiledFiles Include="$(DxilOutputDir)*.dxil" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <EmbeddedResource Include="@(_DxilCompiledFiles)" LogicalName="Shaders.%(_DxilCompiledFiles.Filename).dxil" />
+    </ItemGroup>
+  </Target>
+
 </Project>

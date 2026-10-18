@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
 
 jobs:
-
   build-d3d-payload:
     name: Build Windows D3D Payload (Native AOT)
     runs-on: windows-latest
@@ -20,6 +19,26 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
+      - name: Install Slang Compiler
+        shell: pwsh
+        run: |
+          Write-Host "[CI] Fetching latest Slang compiler release..."
+          $headers = @{ "User-Agent" = "GPU-T-CI" }
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/shader-slang/slang/releases/latest" -Headers $headers
+          $asset = $release.assets | Where-Object { $_.name -like "*windows-x86_64.zip" } | Select-Object -First 1
+          if (-not $asset) {
+              throw "Could not find windows-x86_64.zip asset in Slang release!"
+          }
+          Write-Host "[CI] Downloading $($asset.name) from $($asset.browser_download_url)..."
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:TEMP\slang.zip"
+          Expand-Archive "$env:TEMP\slang.zip" -DestinationPath "$env:USERPROFILE\slang" -Force
+          "$env:USERPROFILE\slang\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "[CI] Slang compiler installed successfully."
+
+      - name: Verify Slang Compiler
+        run: |
+          slangc -v
 
       - name: Publish D3D Payload as Native AOT
         run: |
